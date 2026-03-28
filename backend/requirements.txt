@@ -1,0 +1,39 @@
+# FastAPI & Server
+fastapi==0.115.11
+uvicorn[standard]==0.29.0
+python-multipart==0.0.9
+sse-starlette==2.1.0
+
+# Database - PostgreSQL
+asyncpg==0.30.0
+sqlalchemy[asyncio]==2.0.36
+alembic==1.14.1
+pgvector==0.3.6
+
+# Database - Neo4j
+neo4j==5.25.0
+langchain-neo4j==0.1.1
+
+# AI / LLM
+langchain==0.3.21
+langchain-core==0.3.46
+langchain-openai==0.3.7
+langgraph==0.3.18
+
+# Document Processing
+python-docx==1.1.2
+PyPDF2==3.0.1
+
+# Chinese NLP
+jieba==0.42.1
+
+# Data Processing
+numpy==1.26.2
+pandas==2.2.3
+
+# Utils
+python-dotenv==1.0.1
+pydantic==2.10.6
+pydantic-settings==2.7.1
+rich==13.9.4
+httpx==0.28.1
