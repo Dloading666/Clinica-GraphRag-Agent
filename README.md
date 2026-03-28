@@ -72,7 +72,12 @@ flowchart LR
 | `fusion_rag` | 多路检索融合后再生成答案 |
 | `deep_research` | 面向复杂问题的多跳式深度研究 |
 
+## 项目演示
+![img.png](demo_photo/img.png)
+![img_1.png](demo_photo/img_1.png)
+
 ## 目录结构
+
 
 ```text
 .
