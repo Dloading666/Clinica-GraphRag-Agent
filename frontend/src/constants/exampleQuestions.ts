@@ -5,20 +5,20 @@ export interface KnowledgeExampleQuestion {
 
 export const KNOWLEDGE_EXAMPLE_QUESTIONS: KnowledgeExampleQuestion[] = [
   {
-    source: '中医基础理论',
-    text: '从中医基础理论看，气滞、气逆、气陷分别有哪些辨证要点？',
+    source: '常见症状',
+    text: '头痛应该怎么进行治疗？',
   },
   {
-    source: '病理学',
-    text: '病理学中，可逆性损伤、坏死和凋亡的核心区别是什么？',
+    source: '心血管问题',
+    text: '心脏不舒服加上高血压，怎么治疗？',
   },
   {
-    source: '药理学',
-    text: '药理学里的首过效应会怎样影响口服药物的生物利用度？',
+    source: '常见症状',
+    text: '感冒了怎么办？',
   },
   {
-    source: '药理学',
-    text: '抗菌药物的 MIC、最低杀菌浓度和耐药性在临床选药中应如何理解？',
+    source: '皮肤症状',
+    text: '全身一热就全身发痒，这是什么原因？',
   },
 ]
 
