@@ -14,7 +14,7 @@ from langchain.prompts import (
     MessagesPlaceholder,
 )
 
-from app.models.llm_factory import get_llm, get_embeddings
+from app.models.llm_factory import content_to_text, get_embeddings, get_llm
 from app.models.db_models import Entity, Relationship, EntityChunkMention
 from app.config.prompts.clinical_prompts import (
     ENTITY_EXTRACTION_SYSTEM_PROMPT,
@@ -62,7 +62,7 @@ class EntityRelationExtractor:
                 "input_text": text,
                 "chat_history": [],
             })
-            return result.content if hasattr(result, "content") else str(result)
+            return content_to_text(result.content) if hasattr(result, "content") else str(result)
         except Exception as e:
             print(f"[EntityExtractor] LLM 抽取失败: {e}")
             return ""

@@ -16,19 +16,80 @@ function getStepColor(name: string): string {
 }
 
 export default function PerformancePanel() {
-  const { currentTraceSteps, totalLatency, tokenCount } = useChatStore()
+  const {
+    currentTraceSteps,
+    currentThinkingSteps,
+    totalLatency,
+    tokenCount,
+    firstTokenLatencyMs,
+    retrieveLatencyMs,
+    answerCompleteLatencyMs,
+    messages,
+    isStreaming,
+  } = useChatStore()
 
-  const stepsWithLatency = currentTraceSteps.filter(
+  const latestAssistantMessage = [...messages]
+    .reverse()
+    .find((message) => message.role === 'assistant')
+  const traceSteps =
+    currentTraceSteps.length > 0
+      ? currentTraceSteps
+      : !isStreaming
+        ? latestAssistantMessage?.traceSteps ?? []
+        : []
+  const thinkingSteps =
+    currentThinkingSteps.length > 0
+      ? currentThinkingSteps
+      : !isStreaming
+        ? latestAssistantMessage?.thinkingSteps ?? []
+        : []
+  const resolvedTotalLatency =
+    totalLatency > 0
+      ? totalLatency
+      : !isStreaming
+        ? latestAssistantMessage?.totalLatency ?? 0
+        : 0
+  const resolvedTokenCount =
+    tokenCount > 0
+      ? tokenCount
+      : !isStreaming
+        ? latestAssistantMessage?.tokenCount ?? 0
+        : 0
+  const resolvedFirstTokenLatencyMs =
+    firstTokenLatencyMs > 0
+      ? firstTokenLatencyMs
+      : !isStreaming
+        ? latestAssistantMessage?.firstTokenLatencyMs ?? 0
+        : 0
+  const resolvedRetrieveLatencyMs =
+    retrieveLatencyMs > 0
+      ? retrieveLatencyMs
+      : !isStreaming
+        ? latestAssistantMessage?.retrieveLatencyMs ?? 0
+        : 0
+  const resolvedAnswerCompleteLatencyMs =
+    answerCompleteLatencyMs > 0
+      ? answerCompleteLatencyMs
+      : !isStreaming
+        ? latestAssistantMessage?.answerCompleteLatencyMs ?? 0
+        : 0
+
+  const stepsWithLatency = traceSteps.filter(
     (step) => step.latency !== undefined && step.latency > 0
   )
+  const stepCount = traceSteps.length > 0 ? traceSteps.length : thinkingSteps.length
   const derivedTotalLatency =
-    totalLatency && totalLatency > 0
-      ? totalLatency
+    resolvedTotalLatency && resolvedTotalLatency > 0
+      ? resolvedTotalLatency
       : stepsWithLatency.reduce((sum, step) => sum + (step.latency ?? 0), 0)
   const showLatencySummary = derivedTotalLatency > 0
-  const showTokenSummary = tokenCount > 0
+  const showTokenSummary = resolvedTokenCount > 0
+  const hasTimingBreakdown =
+    resolvedFirstTokenLatencyMs > 0 ||
+    resolvedRetrieveLatencyMs > 0 ||
+    resolvedAnswerCompleteLatencyMs > 0
 
-  if (currentTraceSteps.length === 0) {
+  if (stepCount === 0 && !showLatencySummary && !showTokenSummary && !hasTimingBreakdown) {
     return (
       <div style={{ padding: 12 }}>
         <Empty
@@ -102,13 +163,28 @@ export default function PerformancePanel() {
               </Typography.Text>
               <div style={{ marginTop: 6 }}>
                 <Typography.Text strong style={{ fontSize: 20, color: '#722ed1' }}>
-                  {tokenCount >= 1000
-                    ? `${(tokenCount / 1000).toFixed(1)}k`
-                    : tokenCount.toString()}
+                  {resolvedTokenCount >= 1000
+                    ? `${(resolvedTokenCount / 1000).toFixed(1)}k`
+                    : resolvedTokenCount.toString()}
                 </Typography.Text>
               </div>
             </div>
           )}
+        </div>
+      )}
+
+      {hasTimingBreakdown && (
+        <div
+          style={{
+            display: 'grid',
+            gridTemplateColumns: 'repeat(3, minmax(0, 1fr))',
+            gap: 10,
+            marginBottom: 16,
+          }}
+        >
+          <MetricCard label="首字耗时" value={resolvedFirstTokenLatencyMs} accent="#1677ff" />
+          <MetricCard label="检索完成" value={resolvedRetrieveLatencyMs} accent="#13c2c2" />
+          <MetricCard label="回答完成" value={resolvedAnswerCompleteLatencyMs} accent="#52c41a" />
         </div>
       )}
 
@@ -126,7 +202,7 @@ export default function PerformancePanel() {
       >
         <CheckCircleOutlined style={{ color: '#52c41a', fontSize: 12 }} />
         <Typography.Text style={{ fontSize: 12, color: '#52c41a' }}>
-          完成 {currentTraceSteps.length} 个推理步骤
+          完成 {stepCount} 个推理步骤
         </Typography.Text>
       </div>
 
@@ -206,6 +282,36 @@ export default function PerformancePanel() {
           })}
         </>
       )}
+    </div>
+  )
+}
+
+function MetricCard({
+  label,
+  value,
+  accent,
+}: {
+  label: string
+  value: number
+  accent: string
+}) {
+  return (
+    <div
+      style={{
+        padding: '10px 12px',
+        borderRadius: 8,
+        border: `1px solid ${accent}33`,
+        background: `${accent}10`,
+      }}
+    >
+      <Typography.Text type="secondary" style={{ fontSize: 10 }}>
+        {label}
+      </Typography.Text>
+      <div style={{ marginTop: 6 }}>
+        <Typography.Text strong style={{ fontSize: 18, color: accent }}>
+          {value > 0 ? `${(value / 1000).toFixed(2)}s` : '--'}
+        </Typography.Text>
+      </div>
     </div>
   )
 }

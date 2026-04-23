@@ -17,6 +17,7 @@ langchain-neo4j==0.1.1
 # AI / LLM
 langchain==0.3.21
 langchain-core==0.3.46
+langchain-anthropic==0.3.8
 langchain-openai==0.3.7
 langgraph==0.3.18
 

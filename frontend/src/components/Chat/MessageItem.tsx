@@ -4,6 +4,7 @@ import remarkGfm from 'remark-gfm'
 import { Avatar, Typography } from 'antd'
 import { UserOutlined } from '@ant-design/icons'
 import type { Message } from '../../types'
+import { useChatStore } from '../../stores/chatStore'
 import { useProfileStore } from '../../stores/profileStore'
 
 interface Props {
@@ -12,7 +13,10 @@ interface Props {
 }
 
 function getElapsedSeconds(createdAt: Date | string) {
-  return Math.max(0, Math.floor((Date.now() - new Date(createdAt).getTime()) / 1000))
+  return Math.max(
+    0,
+    Math.floor((Date.now() - new Date(createdAt).getTime()) / 1000)
+  )
 }
 
 export default function MessageItem({
@@ -21,6 +25,7 @@ export default function MessageItem({
 }: Props) {
   const isUser = message.role === 'user'
   const avatarDataUrl = useProfileStore((s) => s.avatarDataUrl)
+  const currentPhaseLabel = useChatStore((s) => s.currentPhaseLabel)
   const [elapsedSeconds, setElapsedSeconds] = useState(() =>
     getElapsedSeconds(message.createdAt)
   )
@@ -48,6 +53,7 @@ export default function MessageItem({
     message.tokenCount !== undefined && message.tokenCount > 0
   const showStreamingFooter = isStreaming && Boolean(message.content)
   const showFooter = showStreamingFooter || showFinalLatency || showTokenCount
+  const phaseLabel = currentPhaseLabel || '思考中'
 
   if (isUser) {
     return (
@@ -69,7 +75,9 @@ export default function MessageItem({
             padding: '10px 14px',
           }}
         >
-          <Typography.Text style={{ fontSize: 14, color: '#1a1a2e', lineHeight: '1.6' }}>
+          <Typography.Text
+            style={{ fontSize: 14, color: '#1a1a2e', lineHeight: '1.6' }}
+          >
             {message.content}
           </Typography.Text>
         </div>
@@ -118,6 +126,21 @@ export default function MessageItem({
               <ReactMarkdown remarkPlugins={[remarkGfm]}>
                 {message.content}
               </ReactMarkdown>
+              {isStreaming ? (
+                <span
+                  aria-hidden="true"
+                  style={{
+                    display: 'inline-block',
+                    marginTop: 2,
+                    color: '#1677ff',
+                    fontSize: 16,
+                    fontWeight: 700,
+                    animation: 'pulse 1s infinite',
+                  }}
+                >
+                  ▍
+                </span>
+              ) : null}
             </div>
           ) : (
             <div
@@ -139,7 +162,7 @@ export default function MessageItem({
                   animation: 'pulse 1s infinite',
                 }}
               />
-              <span>思考中</span>
+              <span>{phaseLabel}</span>
               <span
                 style={{
                   color: '#b6c2d1',
@@ -159,6 +182,7 @@ export default function MessageItem({
               display: 'flex',
               gap: 10,
               paddingLeft: 4,
+              flexWrap: 'wrap',
             }}
           >
             {showStreamingFooter ? (
@@ -169,7 +193,7 @@ export default function MessageItem({
                   fontVariantNumeric: 'tabular-nums',
                 }}
               >
-                已用时 {elapsedSeconds} 秒
+                {phaseLabel} · 已用时 {elapsedSeconds} 秒
               </span>
             ) : null}
             {!isStreaming && showFinalLatency ? (

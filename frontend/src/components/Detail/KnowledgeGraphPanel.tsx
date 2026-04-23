@@ -1,9 +1,14 @@
-import { useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { Button, Spin, Tag, Typography } from 'antd'
 import { ReloadOutlined } from '@ant-design/icons'
 import { api } from '../../api'
 import { useChatStore } from '../../stores/chatStore'
-import type { KGData, KGLink, KGNode } from '../../types'
+import type {
+  KGData,
+  KGLink,
+  KGNode,
+  KnowledgeBaseStatus,
+} from '../../types'
 
 const TYPE_COLORS: Record<string, string> = {
   疾病: '#ff4d4f',
@@ -18,6 +23,40 @@ const TYPE_COLORS: Record<string, string> = {
 
 function getTypeColor(type: string): string {
   return TYPE_COLORS[type] || '#8c8c8c'
+}
+
+function formatKbStatus(status: KnowledgeBaseStatus | null): string | null {
+  if (!status) return null
+
+  if (status.status === 'running') {
+    if (status.stage === 'ingesting') {
+      return `正在导入知识库文档，当前已检测到 ${status.source_files} 个源文件，请稍候。`
+    }
+    if (status.stage === 'building_graph') {
+      return '文档已导入，正在抽取实体关系并构建知识图谱。这个阶段会稍慢一些。'
+    }
+    return status.message || '知识库任务正在后台执行。'
+  }
+
+  if (status.status === 'failed') {
+    return status.error
+      ? `${status.message || '知识库任务失败。'} ${status.error}`
+      : status.message || '知识库任务失败。'
+  }
+
+  if (status.counts.entities > 0 || status.counts.relationships > 0) {
+    return `已构建 ${status.counts.entities} 个实体、${status.counts.relationships} 条关系。`
+  }
+
+  if (status.source_files > 0 && status.counts.documents === 0) {
+    return `检测到 ${status.source_files} 个知识库文件尚未导入。点击“重建图谱”会自动先导入知识库，再构建图谱。`
+  }
+
+  if (status.source_files === 0) {
+    return '当前没有检测到知识库源文件，请先上传或挂载知识库文档。'
+  }
+
+  return status.message || '当前知识图谱为空，请先重建图谱或重新导入知识库。'
 }
 
 interface NodePosition {
@@ -171,11 +210,31 @@ function SimpleGraph({ data }: { data: KGData }) {
 
           return (
             <g>
-              <rect x={tooltipX} y={tooltipY} width={60} height={28} rx={4} fill="#1a1a2e" opacity={0.85} />
-              <text x={tooltipX + 30} y={tooltipY + 11} textAnchor="middle" fontSize={8} fill={color}>
+              <rect
+                x={tooltipX}
+                y={tooltipY}
+                width={60}
+                height={28}
+                rx={4}
+                fill="#1a1a2e"
+                opacity={0.85}
+              />
+              <text
+                x={tooltipX + 30}
+                y={tooltipY + 11}
+                textAnchor="middle"
+                fontSize={8}
+                fill={color}
+              >
                 {node.type}
               </text>
-              <text x={tooltipX + 30} y={tooltipY + 22} textAnchor="middle" fontSize={9} fill="#fff">
+              <text
+                x={tooltipX + 30}
+                y={tooltipY + 22}
+                textAnchor="middle"
+                fontSize={9}
+                fill="#fff"
+              >
                 {node.label.substring(0, 8)}
               </text>
             </g>
@@ -186,60 +245,130 @@ function SimpleGraph({ data }: { data: KGData }) {
 }
 
 export default function KnowledgeGraphPanel() {
-  const { currentKgData } = useChatStore()
+  const { currentKgData, currentKgStatus, messages, isStreaming } = useChatStore()
   const [fullKgData, setFullKgData] = useState<KGData | null>(null)
   const [loading, setLoading] = useState(false)
   const [rebuilding, setRebuilding] = useState(false)
   const [statusMessage, setStatusMessage] = useState<string | null>(null)
+  const [kbStatus, setKbStatus] = useState<KnowledgeBaseStatus | null>(null)
 
-  const loadFullGraph = () => {
-    setStatusMessage(null)
-    setLoading(true)
-    api
-      .getKgVisualization()
-      .then((res) => {
-        setFullKgData(res.data)
-        if (res.data.nodes.length === 0) {
-          setStatusMessage('当前知识图谱为空，请先重建图谱或重新导入知识库。')
-        }
-      })
-      .catch(() => {
-        setStatusMessage('加载知识图谱失败，请稍后重试。')
-      })
-      .finally(() => {
-        setLoading(false)
-      })
-  }
-
-  const rebuildGraph = () => {
-    setStatusMessage('正在重建知识图谱，这一步可能需要几分钟。')
-    setRebuilding(true)
-    api
-      .rebuildKnowledgeGraph()
-      .then(() => api.getKgVisualization())
-      .then((res) => {
-        setFullKgData(res.data)
-        if (res.data.nodes.length > 0) {
-          setStatusMessage('知识图谱已重建完成。')
-        } else {
-          setStatusMessage('图谱重建完成，但暂时还没有可展示的节点。')
-        }
-      })
-      .catch(() => {
-        setStatusMessage('重建知识图谱失败，请检查后端日志。')
-      })
-      .finally(() => {
-        setRebuilding(false)
-      })
-  }
+  const latestAssistantMessage = [...messages]
+    .reverse()
+    .find((message) => message.role === 'assistant')
+  const resolvedKgData =
+    currentKgData ?? (!isStreaming ? latestAssistantMessage?.kgData ?? null : null)
+  const resolvedKgStatus =
+    currentKgStatus !== 'idle'
+      ? currentKgStatus
+      : !isStreaming
+        ? latestAssistantMessage?.kgStatus ?? 'idle'
+        : 'idle'
 
   const hasCurrentGraph =
-    !!currentKgData &&
-    (currentKgData.nodes.length > 0 || currentKgData.links.length > 0)
+    !!resolvedKgData &&
+    (resolvedKgData.nodes.length > 0 || resolvedKgData.links.length > 0)
   const hasFullGraph =
     !!fullKgData &&
     (fullKgData.nodes.length > 0 || fullKgData.links.length > 0)
-  const displayData = hasCurrentGraph ? currentKgData : hasFullGraph ? fullKgData : null
+  const displayData = hasCurrentGraph ? resolvedKgData : hasFullGraph ? fullKgData : null
+  const graphStatusMessage =
+    resolvedKgStatus === 'loading' && !hasCurrentGraph
+      ? '正在加载当前问题相关子图，请稍候。'
+      : resolvedKgStatus === 'error' && !hasCurrentGraph
+        ? '当前问题相关子图加载失败，你可以手动加载全图。'
+        : statusMessage
+
+  const loadFullGraph = useCallback(
+    async (silent = false) => {
+      setLoading(true)
+      try {
+        const res = await api.getKgVisualization()
+        setFullKgData(res.data)
+        if (res.data.nodes.length > 0 || res.data.links.length > 0) {
+          setStatusMessage(
+            `知识图谱已加载，当前展示 ${res.data.nodes.length} 个节点、${res.data.links.length} 条关系。`
+          )
+          return
+        }
+
+        if (!silent) {
+          setStatusMessage('当前知识图谱为空，正在检查后台导入和建图状态。')
+        }
+      } catch {
+        if (!silent) {
+          setStatusMessage('加载知识图谱失败，请稍后重试。')
+        }
+      } finally {
+        setLoading(false)
+      }
+    },
+    []
+  )
+
+  const refreshKnowledgeBaseStatus = useCallback(
+    async (autoLoadGraph = true) => {
+      try {
+        const res = await api.getKnowledgeBaseStatus()
+        const nextStatus = res.data
+        setKbStatus(nextStatus)
+
+        const nextMessage = formatKbStatus(nextStatus)
+        if (nextMessage) {
+          setStatusMessage(nextMessage)
+        }
+
+        const isRunning = nextStatus.status === 'running' || nextStatus.active === true
+        setRebuilding(isRunning)
+
+        if (
+          autoLoadGraph &&
+          !isRunning &&
+          nextStatus.counts.entities > 0 &&
+          !hasCurrentGraph &&
+          !hasFullGraph
+        ) {
+          void loadFullGraph(true)
+        }
+      } catch {
+        setStatusMessage('获取知识库状态失败，请稍后重试。')
+      }
+    },
+    [hasCurrentGraph, hasFullGraph, loadFullGraph]
+  )
+
+  useEffect(() => {
+    void loadFullGraph(true)
+    void refreshKnowledgeBaseStatus(false)
+  }, [loadFullGraph, refreshKnowledgeBaseStatus])
+
+  useEffect(() => {
+    if (!kbStatus || kbStatus.status !== 'running') {
+      return
+    }
+
+    const timer = window.setInterval(() => {
+      void refreshKnowledgeBaseStatus(true)
+    }, 5000)
+
+    return () => window.clearInterval(timer)
+  }, [kbStatus, refreshKnowledgeBaseStatus])
+
+  const rebuildGraph = useCallback(async () => {
+    setRebuilding(true)
+    setStatusMessage('已提交后台任务，正在准备导入知识库并重建图谱。')
+    try {
+      const res = await api.rebuildKnowledgeGraph()
+      setKbStatus(res.data)
+      const nextMessage = formatKbStatus(res.data)
+      if (nextMessage) {
+        setStatusMessage(nextMessage)
+      }
+      void refreshKnowledgeBaseStatus(true)
+    } catch {
+      setRebuilding(false)
+      setStatusMessage('提交重建任务失败，请稍后重试。')
+    }
+  }, [refreshKnowledgeBaseStatus])
 
   const presentTypes = displayData
     ? [...new Set(displayData.nodes.map((node) => node.type))]
@@ -263,28 +392,63 @@ export default function KnowledgeGraphPanel() {
           <Button
             size="small"
             icon={<ReloadOutlined />}
-            onClick={loadFullGraph}
+            onClick={() => void loadFullGraph(false)}
             loading={loading}
           >
             加载全图
           </Button>
-          <Button size="small" type="dashed" onClick={rebuildGraph} loading={rebuilding}>
+          <Button
+            size="small"
+            type="dashed"
+            onClick={() => void rebuildGraph()}
+            loading={rebuilding}
+          >
             重建图谱
           </Button>
         </div>
       </div>
 
-      {statusMessage && (
+      {kbStatus && (
+        <div style={{ marginBottom: 8, display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+          <Tag color={kbStatus.status === 'failed' ? 'error' : kbStatus.status === 'running' ? 'processing' : 'default'}>
+            {kbStatus.status === 'running'
+              ? '构建中'
+              : kbStatus.status === 'failed'
+                ? '失败'
+                : kbStatus.counts.entities > 0
+                  ? '已就绪'
+                  : '空库'}
+          </Tag>
+          <Tag>文档 {kbStatus.counts.documents}</Tag>
+          <Tag>文本块 {kbStatus.counts.chunks}</Tag>
+          <Tag>实体 {kbStatus.counts.entities}</Tag>
+          <Tag>关系 {kbStatus.counts.relationships}</Tag>
+        </div>
+      )}
+
+      {graphStatusMessage && (
         <div style={{ marginBottom: 10 }}>
           <Typography.Text type="secondary" style={{ fontSize: 11 }}>
-            {statusMessage}
+            {graphStatusMessage}
           </Typography.Text>
         </div>
       )}
 
-      {loading || rebuilding ? (
-        <div style={{ display: 'flex', justifyContent: 'center', paddingTop: 60 }}>
+      {loading || rebuilding || (currentKgStatus === 'loading' && !hasCurrentGraph) ? (
+        <div
+          style={{
+            display: 'flex',
+            flexDirection: 'column',
+            alignItems: 'center',
+            justifyContent: 'center',
+            gap: 10,
+            paddingTop: 52,
+          }}
+        >
           <Spin />
+          <Typography.Text type="secondary" style={{ fontSize: 12, textAlign: 'center' }}>
+            {graphStatusMessage || '正在处理中，请稍候。'}
+          </Typography.Text>
         </div>
       ) : displayData && displayData.nodes.length > 0 ? (
         <>
@@ -339,23 +503,19 @@ export default function KnowledgeGraphPanel() {
         >
           <span style={{ fontSize: 28, color: '#8c8c8c' }}>图</span>
           <Typography.Text type="secondary" style={{ fontSize: 12, textAlign: 'center' }}>
-            {statusMessage || '发送消息后会自动加载相关子图，也可以手动加载全图。'}
+            {graphStatusMessage || '发送消息后会自动加载相关子图，也可以手动加载全图。'}
           </Typography.Text>
           <div style={{ display: 'flex', gap: 8 }}>
             <Button
               size="small"
               type="dashed"
               icon={<ReloadOutlined />}
-              onClick={loadFullGraph}
+              onClick={() => void loadFullGraph(false)}
               loading={loading}
             >
               手动加载知识图谱
             </Button>
-            <Button
-              size="small"
-              onClick={rebuildGraph}
-              loading={rebuilding}
-            >
+            <Button size="small" onClick={() => void rebuildGraph()} loading={rebuilding}>
               重建图谱
             </Button>
           </div>

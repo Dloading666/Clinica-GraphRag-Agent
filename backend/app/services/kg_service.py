@@ -8,7 +8,7 @@ from sqlalchemy import or_, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.graph.neo4j_manager import clinical_graph_manager
-from app.models.db_models import Entity, Relationship
+from app.models.db_models import Chunk, Document, Entity, Relationship
 from app.models.llm_factory import get_embeddings
 
 
@@ -161,6 +161,184 @@ async def _load_entities_by_ids(entity_ids: List[int], db: AsyncSession) -> List
     return [_serialize_entity(entity) for entity in result.scalars().all()]
 
 
+def _chunk_label(chunk: Chunk) -> str:
+    section = (chunk.section or "").strip()
+    chapter = (chunk.chapter or "").strip()
+    if section:
+        return section[:14]
+    if chapter:
+        return chapter[:14]
+    content = (chunk.content or "").replace("\n", " ").strip()
+    return content[:18] or "知识片段"
+
+
+def _chunk_description(chunk: Chunk) -> str:
+    parts = [part.strip() for part in [chunk.chapter or "", chunk.section or ""] if part]
+    snippet = (chunk.content or "").replace("\n", " ").strip()
+    if snippet:
+        parts.append(snippet[:160])
+    return " | ".join(parts)
+
+
+async def _get_chunk_graph_for_query(
+    query: str, db: AsyncSession, limit: int = 12
+) -> Dict:
+    clean_query = query.strip()
+    if not clean_query:
+        return {"nodes": [], "links": []}
+
+    tokens = [
+        token
+        for token in re.split(r"[\s,，。；;、（）()]+", clean_query)
+        if len(token.strip()) >= 2
+    ]
+    search_terms = [clean_query, *tokens]
+
+    conditions = []
+    for term in search_terms[:6]:
+        conditions.append(Chunk.content.ilike(f"%{term}%"))
+        conditions.append(Chunk.chapter.ilike(f"%{term}%"))
+        conditions.append(Chunk.section.ilike(f"%{term}%"))
+
+    if not conditions:
+        return {"nodes": [], "links": []}
+
+    result = await db.execute(
+        select(Chunk, Document)
+        .join(Document, Document.id == Chunk.document_id)
+        .where(or_(*conditions))
+        .limit(max(limit, 8))
+    )
+    rows = result.all()
+
+    if not rows:
+        return {"nodes": [], "links": []}
+
+    nodes: List[Dict] = []
+    links: List[Dict] = []
+    seen_docs: set[str] = set()
+    seen_chunks: set[str] = set()
+
+    for chunk, document in rows:
+        doc_node_id = f"doc-{document.id}"
+        chunk_node_id = f"chunk-{chunk.id}"
+
+        if doc_node_id not in seen_docs:
+            seen_docs.add(doc_node_id)
+            nodes.append(
+                {
+                    "id": doc_node_id,
+                    "label": (document.filename or "知识文档").replace(".docx", "").replace(".pdf", "")[:16],
+                    "type": "文档",
+                    "size": 18,
+                    "properties": {
+                        "description": document.file_path or "",
+                        "document_id": document.id,
+                    },
+                }
+            )
+
+        if chunk_node_id not in seen_chunks:
+            seen_chunks.add(chunk_node_id)
+            nodes.append(
+                {
+                    "id": chunk_node_id,
+                    "label": _chunk_label(chunk),
+                    "type": "知识片段",
+                    "size": 12,
+                    "properties": {
+                        "description": _chunk_description(chunk),
+                        "chunk_id": chunk.id,
+                        "document_id": document.id,
+                    },
+                }
+            )
+
+        links.append(
+            {
+                "source": doc_node_id,
+                "target": chunk_node_id,
+                "label": "包含",
+                "weight": 0.7,
+            }
+        )
+
+    return {"nodes": nodes, "links": links}
+
+
+async def _get_chunk_graph_visualization(db: AsyncSession, limit: int = 24) -> Dict:
+    result = await db.execute(
+        select(Chunk, Document)
+        .join(Document, Document.id == Chunk.document_id)
+        .order_by(Chunk.created_at.asc())
+        .limit(max(limit, 12))
+    )
+    rows = result.all()
+
+    if not rows:
+        return {"nodes": [], "links": []}
+
+    nodes: List[Dict] = []
+    links: List[Dict] = []
+    seen_docs: set[str] = set()
+    previous_chunk_by_doc: Dict[int, str] = {}
+
+    for chunk, document in rows:
+        doc_node_id = f"doc-{document.id}"
+        chunk_node_id = f"chunk-{chunk.id}"
+
+        if doc_node_id not in seen_docs:
+            seen_docs.add(doc_node_id)
+            nodes.append(
+                {
+                    "id": doc_node_id,
+                    "label": (document.filename or "知识文档").replace(".docx", "").replace(".pdf", "")[:16],
+                    "type": "文档",
+                    "size": 18,
+                    "properties": {
+                        "description": document.file_path or "",
+                        "document_id": document.id,
+                    },
+                }
+            )
+
+        nodes.append(
+            {
+                "id": chunk_node_id,
+                "label": _chunk_label(chunk),
+                "type": "知识片段",
+                "size": 11,
+                "properties": {
+                    "description": _chunk_description(chunk),
+                    "chunk_id": chunk.id,
+                    "document_id": document.id,
+                },
+            }
+        )
+        links.append(
+            {
+                "source": doc_node_id,
+                "target": chunk_node_id,
+                "label": "包含",
+                "weight": 0.7,
+            }
+        )
+
+        previous = previous_chunk_by_doc.get(document.id)
+        if previous:
+            links.append(
+                {
+                    "source": previous,
+                    "target": chunk_node_id,
+                    "label": "相关",
+                    "weight": 0.35,
+                }
+            )
+        previous_chunk_by_doc[document.id] = chunk_node_id
+
+    return {"nodes": nodes, "links": links}
+
+
 async def get_kg_for_query(query: str, db: AsyncSession, limit: int = 50) -> Dict:
     """
     Get knowledge graph data relevant to a query.
@@ -181,7 +359,7 @@ async def get_kg_for_query(query: str, db: AsyncSession, limit: int = 50) -> Dic
         entities = await _find_entities_by_text(query, db, limit=min(limit, 20))
 
     if not entities:
-        return {"nodes": [], "links": []}
+        return await _get_chunk_graph_for_query(query, db, limit=min(limit, 14))
 
     seed_entity_ids = [entity["id"] for entity in entities]
 
@@ -261,7 +439,7 @@ async def get_kg_visualization(db: AsyncSession, limit: int = 100) -> Dict:
     entities = result.fetchall()
 
     if not entities:
-        return {"nodes": [], "links": []}
+        return await _get_chunk_graph_visualization(db, limit=min(limit, 24))
 
     entity_ids = [entity.id for entity in entities]
     entity_map = {entity.id: entity for entity in entities}

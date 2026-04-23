@@ -1,4 +1,5 @@
-"""Graph RAG Agent - 使用本地图谱搜索（向量 + 知识图谱）"""
+"""Graph RAG agent."""
+
 import json
 import re
 from typing import Dict, List
@@ -19,58 +20,64 @@ from app.config.prompts.clinical_prompts import (
     REDUCE_SYSTEM_PROMPT,
     response_type,
 )
+from app.models.llm_factory import content_to_text
 from app.search.global_search import GlobalSearch
 from app.search.local_search import LocalSearch
 
 
 class GraphAgent(BaseAgent):
-    """使用知识图谱本地/全局搜索的临床问答 Agent"""
+    """Agent that routes between local KG retrieval and global summaries."""
 
     def __init__(self):
         self.local_search = LocalSearch()
         self.global_search = GlobalSearch()
         super().__init__()
-
-    # ──────────────────────────────────────────────
-    # Tool 配置
-    # ──────────────────────────────────────────────
+        self.require_knowledge_evidence = True
 
     def _setup_tools(self) -> List:
-        def local_search_fn(query: str) -> str:
-            """Search clinical knowledge graph for specific entities and relationships"""
-            async def _async():
-                async with AsyncSessionLocal() as db:
-                    result = await self.local_search.search(query, db)
-                    return self.local_search.format_context(result)
+        async def local_search_async(query: str) -> str:
+            async with AsyncSessionLocal() as db:
+                result = await self.local_search.search(query, db)
+                self._set_retrieval_metadata(
+                    stats=result.get("stats"),
+                    source_items=result.get("sources"),
+                )
+                return self.local_search.format_context(result)
 
-            return run_async(_async())
+        def local_search_fn(query: str) -> str:
+            """Search the clinical knowledge graph for entity-level evidence."""
+
+            return run_async(local_search_async(query))
 
         def global_search_fn(query: str) -> str:
-            """Search entire clinical knowledge base using community-level analysis"""
-            return self.global_search.search(query, level=1)
+            """Search the whole knowledge base using community summaries."""
+
+            payload = self.global_search.search_with_metadata(query, level=1)
+            self._set_retrieval_metadata(
+                stats=payload.get("stats"),
+                source_items=payload.get("sources"),
+            )
+            return payload.get("context", "")
 
         return [
-            Tool(
-                name="local_retriever",
+            Tool.from_function(
                 func=local_search_fn,
+                coroutine=local_search_async,
+                name="local_retriever",
                 description=(
-                    "搜索临床知识图谱，适合查询特定疾病、药物、症状及其关系。"
-                    "输入：具体的临床实体名称或问题。"
+                    "Search the clinical knowledge graph for specific diseases, drugs, "
+                    "symptoms, and relationships."
                 ),
             ),
             Tool(
                 name="global_retriever",
                 func=global_search_fn,
                 description=(
-                    "全局搜索整个临床知识库，适合宏观性、综合性临床问题。"
-                    "输入：广泛的临床问题或诊疗策略查询。"
+                    "Search community-level summaries for broad or synthesis-heavy "
+                    "clinical questions."
                 ),
             ),
         ]
-
-    # ──────────────────────────────────────────────
-    # 图谱边（含 reduce 节点）
-    # ──────────────────────────────────────────────
 
     def _add_retrieval_edges(self, workflow) -> None:
         workflow.add_node("reduce", self._reduce_node)
@@ -82,26 +89,37 @@ class GraphAgent(BaseAgent):
         workflow.add_edge("reduce", END)
 
     def _grade_documents(self, state) -> str:
-        """判断使用 generate 还是 reduce 节点"""
         messages = state["messages"]
-        # 找到最近的 AI 消息，检查是否调用了 global_retriever
         for msg in reversed(messages):
-            tool_calls = getattr(msg, "additional_kwargs", {}).get("tool_calls", [])
-            if tool_calls:
-                tool_name = tool_calls[0].get("function", {}).get("name", "")
-                if tool_name == "global_retriever":
-                    return "reduce"
-                break
-        return "generate"
+            tool_calls = getattr(msg, "tool_calls", None) or getattr(
+                msg, "additional_kwargs", {}
+            ).get("tool_calls", [])
+            if not tool_calls:
+                continue
 
-    # ──────────────────────────────────────────────
-    # 关键词提取
-    # ──────────────────────────────────────────────
+            first_tool_call = tool_calls[0]
+            if isinstance(first_tool_call, dict):
+                tool_name = (
+                    first_tool_call.get("name")
+                    or first_tool_call.get("function", {}).get("name", "")
+                )
+            else:
+                tool_name = getattr(first_tool_call, "name", "")
+
+            if tool_name == "global_retriever":
+                return "reduce"
+            break
+
+        return "generate"
 
     def _extract_keywords(self, query: str) -> Dict[str, List[str]]:
         try:
             result = self.llm.invoke(GRAPH_KEYWORD_PROMPT.format(query=query))
-            content = result.content if hasattr(result, "content") else str(result)
+            content = (
+                content_to_text(result.content)
+                if hasattr(result, "content")
+                else str(result)
+            )
             json_match = re.search(r"\{.*\}", content, re.DOTALL)
             if json_match:
                 return json.loads(json_match.group())
@@ -109,58 +127,101 @@ class GraphAgent(BaseAgent):
             pass
         return {"low_level": [], "high_level": []}
 
-    # ──────────────────────────────────────────────
-    # Generate 节点（本地搜索）
-    # ──────────────────────────────────────────────
+    def _build_question_and_docs(self, messages) -> Dict[str, str]:
+        try:
+            question = self._get_latest_user_message(messages) or "Unknown question"
+            docs = (
+                self._normalize_retrieval_context(messages[-1].content)
+                if len(messages) > 1
+                else ""
+            )
+        except Exception:
+            question = "Unknown question"
+            docs = ""
+        return {"question": question, "docs": docs}
 
     def _generate_node(self, state) -> Dict:
-        messages = state["messages"]
-        try:
-            question = messages[0].content if messages else "未知问题"
-            docs = messages[-1].content if len(messages) > 1 else ""
-        except Exception:
-            question, docs = "未知问题", ""
-
-        prompt = ChatPromptTemplate.from_messages([
-            ("system", LOCAL_SEARCH_SYSTEM_PROMPT),
-            ("human", GRAPH_GENERATE_PROMPT),
-        ])
+        payload = self._build_question_and_docs(state["messages"])
+        prompt = ChatPromptTemplate.from_messages(
+            [
+                ("system", LOCAL_SEARCH_SYSTEM_PROMPT),
+                ("human", GRAPH_GENERATE_PROMPT),
+            ]
+        )
         chain = prompt | self.llm | StrOutputParser()
         try:
-            response = chain.invoke({
-                "context": docs,
-                "question": question,
-                "response_type": response_type,
-            })
-            self._log_execution("generate", question, response[:200])
+            response = chain.invoke(
+                {
+                    "context": payload["docs"],
+                    "question": payload["question"],
+                    "response_type": response_type,
+                }
+            )
+            self._log_execution("generate", payload["question"], response[:200])
             return {"messages": [AIMessage(content=response)]}
-        except Exception as e:
-            return {"messages": [AIMessage(content=f"生成回答时出错：{str(e)}")]}
-
-    # ──────────────────────────────────────────────
-    # Reduce 节点（全局搜索）
-    # ──────────────────────────────────────────────
+        except Exception as exc:
+            return {"messages": [AIMessage(content=f"Answer generation failed: {exc}")]}
 
     def _reduce_node(self, state) -> Dict:
-        messages = state["messages"]
-        try:
-            question = messages[0].content if messages else "未知问题"
-            docs = messages[-1].content if len(messages) > 1 else ""
-        except Exception:
-            question, docs = "未知问题", ""
-
-        prompt = ChatPromptTemplate.from_messages([
-            ("system", REDUCE_SYSTEM_PROMPT),
-            ("human", GRAPH_REDUCE_PROMPT),
-        ])
+        payload = self._build_question_and_docs(state["messages"])
+        prompt = ChatPromptTemplate.from_messages(
+            [
+                ("system", REDUCE_SYSTEM_PROMPT),
+                ("human", GRAPH_REDUCE_PROMPT),
+            ]
+        )
         chain = prompt | self.llm | StrOutputParser()
         try:
-            response = chain.invoke({
-                "report_data": docs,
-                "question": question,
-                "response_type": response_type,
-            })
-            self._log_execution("reduce", question, response[:200])
+            response = chain.invoke(
+                {
+                    "report_data": payload["docs"],
+                    "question": payload["question"],
+                    "response_type": response_type,
+                }
+            )
+            self._log_execution("reduce", payload["question"], response[:200])
             return {"messages": [AIMessage(content=response)]}
-        except Exception as e:
-            return {"messages": [AIMessage(content=f"生成回答时出错：{str(e)}")]}
+        except Exception as exc:
+            return {"messages": [AIMessage(content=f"Answer generation failed: {exc}")]}
+
+    async def _stream_response(self, state) -> Dict:
+        payload = self._build_question_and_docs(state["messages"])
+        route = self._grade_documents(state)
+
+        if route == "reduce":
+            prompt = ChatPromptTemplate.from_messages(
+                [
+                    ("system", REDUCE_SYSTEM_PROMPT),
+                    ("human", GRAPH_REDUCE_PROMPT),
+                ]
+            )
+            async for chunk in self._stream_prompt_response(
+                prompt,
+                {
+                    "report_data": payload["docs"],
+                    "question": payload["question"],
+                    "response_type": response_type,
+                },
+                node_name="reduce",
+                log_input=payload["question"],
+            ):
+                yield chunk
+            return
+
+        prompt = ChatPromptTemplate.from_messages(
+            [
+                ("system", LOCAL_SEARCH_SYSTEM_PROMPT),
+                ("human", GRAPH_GENERATE_PROMPT),
+            ]
+        )
+        async for chunk in self._stream_prompt_response(
+            prompt,
+            {
+                "context": payload["docs"],
+                "question": payload["question"],
+                "response_type": response_type,
+            },
+            node_name="generate",
+            log_input=payload["question"],
+        ):
+            yield chunk

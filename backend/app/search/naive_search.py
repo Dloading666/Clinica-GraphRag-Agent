@@ -1,14 +1,20 @@
 """Naive chunk retrieval with vector search and keyword fallback."""
 
+from __future__ import annotations
+
 import asyncio
 import re
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config.settings import settings
 from app.models.llm_factory import get_embeddings
+from app.search.query_expansion import (
+    build_query_expansion_plan,
+    empty_retrieval_stats,
+)
 
 
 def _tokenize(query: str) -> List[str]:
@@ -33,15 +39,80 @@ class NaiveSearch:
         db: AsyncSession,
         top_k: Optional[int] = None,
         threshold: Optional[float] = None,
+        query_plan: Optional[Dict[str, Any]] = None,
     ) -> List[Dict]:
+        payload = await self.search_with_metadata(
+            query,
+            db,
+            top_k=top_k,
+            threshold=threshold,
+            query_plan=query_plan,
+        )
+        return payload["items"]
+
+    async def search_with_metadata(
+        self,
+        query: str,
+        db: AsyncSession,
+        top_k: Optional[int] = None,
+        threshold: Optional[float] = None,
+        query_plan: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
         k = top_k or self.top_k
         thresh = threshold if threshold is not None else self.threshold
+        plan = query_plan or self._build_query_plan(query)
 
+        results: List[Dict] = []
         try:
-            query_embedding = await asyncio.to_thread(self.embeddings.embed_query, query)
-            return await self._vector_search(query_embedding, db, k, thresh)
+            query_embedding = await asyncio.to_thread(
+                self.embeddings.embed_query,
+                plan["combined_query"],
+            )
+            results = await self._vector_search(query_embedding, db, k, thresh)
         except Exception:
-            return await self._keyword_search(query, db, k)
+            results = []
+
+        if not results:
+            results = await self._keyword_search(
+                query,
+                db,
+                k,
+                keyword_terms=plan["keyword_terms"],
+            )
+
+        results = self._dedupe_results(results)[:k]
+        sources = self._build_sources(results)
+        stats = empty_retrieval_stats(
+            used_query_expansion=plan["used_query_expansion"]
+        )
+        stats["chunk_hits"] = len(results)
+        stats["evidence_total"] = len(sources)
+        stats["knowledge_backed"] = len(sources) > 0
+
+        return {
+            "items": results,
+            "stats": stats,
+            "sources": sources,
+            "query_plan": plan,
+            "has_evidence": bool(sources),
+        }
+
+    def _build_query_plan(self, query: str) -> Dict[str, Any]:
+        apply_targets = {
+            item.strip().lower()
+            for item in settings.search.query_expansion_apply_to.split(",")
+            if item.strip()
+        }
+        enabled = (
+            settings.search.query_expansion_enabled
+            and settings.search.query_expansion_mode == "synonym"
+            and "naive" in apply_targets
+        )
+        return build_query_expansion_plan(
+            query,
+            enabled=enabled,
+            max_terms=settings.search.query_expansion_max_terms,
+        )
 
     async def _vector_search(
         self,
@@ -100,18 +171,18 @@ class NaiveSearch:
         query: str,
         db: AsyncSession,
         top_k: int,
+        *,
+        keyword_terms: Optional[List[str]] = None,
     ) -> List[Dict]:
         clean_query = query.strip()
         if not clean_query:
             return []
 
-        tokens = _tokenize(clean_query)
-        patterns = [clean_query, *tokens]
-
+        terms = keyword_terms or [clean_query, *_tokenize(clean_query)]
         where_clauses = []
         params: Dict[str, object] = {"limit": max(top_k * 6, 30)}
 
-        for index, pattern in enumerate(patterns[:10]):
+        for index, pattern in enumerate(terms[:10]):
             key = f"pattern_{index}"
             params[key] = f"%{pattern}%"
             where_clauses.extend(
@@ -140,11 +211,15 @@ class NaiveSearch:
         result = await db.execute(sql, params)
         rows = result.fetchall()
 
-        ranked = sorted(rows, key=lambda row: self._score_chunk(row, clean_query), reverse=True)
+        ranked = sorted(
+            rows,
+            key=lambda row: self._score_chunk(row, clean_query, terms),
+            reverse=True,
+        )
 
         items: List[Dict] = []
         for row in ranked[:top_k]:
-            score = self._score_chunk(row, clean_query)
+            score = self._score_chunk(row, clean_query, terms)
             if score <= 0:
                 continue
             items.append(
@@ -162,15 +237,15 @@ class NaiveSearch:
 
         return items
 
-    def _score_chunk(self, row, query: str) -> float:
+    def _score_chunk(self, row, query: str, keyword_terms: Optional[List[str]] = None) -> float:
         chapter = row.chapter or ""
         section = row.section or ""
         content = row.content or ""
         blob = f"{chapter} {section} {content}"
 
         score = 0.0
-        if query in blob:
-            score += 8
+        if query and query in blob:
+            score += 10
 
         for token in _tokenize(query):
             score += blob.count(token) * 1.5
@@ -179,7 +254,48 @@ class NaiveSearch:
             if token in section:
                 score += 2
 
+        for term in keyword_terms or []:
+            if term == query:
+                continue
+            score += blob.count(term) * 0.7
+            if term in chapter:
+                score += 1
+            if term in section:
+                score += 1
+
         return score
+
+    def _dedupe_results(self, results: List[Dict]) -> List[Dict]:
+        seen_ids: set[str] = set()
+        deduped: List[Dict] = []
+        for result in results:
+            result_id = str(result.get("id"))
+            if result_id in seen_ids:
+                continue
+            seen_ids.add(result_id)
+            deduped.append(result)
+        return deduped
+
+    def _build_sources(self, results: List[Dict]) -> List[Dict[str, Any]]:
+        sources: List[Dict[str, Any]] = []
+        for result in results:
+            title_parts = []
+            if result.get("chapter"):
+                title_parts.append(result["chapter"])
+            if result.get("section"):
+                title_parts.append(result["section"])
+            title = " > ".join(title_parts) or result.get("document_name", "文献片段")
+            sources.append(
+                {
+                    "id": f"chunk:{result.get('id')}",
+                    "source_type": "chunk",
+                    "label": "文献片段",
+                    "title": title,
+                    "content": result.get("content", ""),
+                    "document_name": result.get("document_name", ""),
+                }
+            )
+        return sources
 
     def format_context(self, results: List[Dict]) -> str:
         if not results:

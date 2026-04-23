@@ -7,6 +7,8 @@ interface ConfigStore {
   topK: number
   similarityThreshold: number
   debugMode: boolean
+  chatDeferKg: boolean
+  typingEffectEnabled: boolean
   setConfig: (config: AppConfig) => void
   setStrategy: (strategy: string) => void
   setTopK: (k: number) => void
@@ -19,12 +21,16 @@ export const useConfigStore = create<ConfigStore>((set) => ({
   selectedStrategy: 'naive_rag',
   topK: 15,
   similarityThreshold: 0.82,
-  debugMode: true,
+  debugMode: false,
+  chatDeferKg: true,
+  typingEffectEnabled: false,
   setConfig: (config) =>
     set({
       config,
       topK: config.default_top_k,
       similarityThreshold: config.default_similarity_threshold,
+      chatDeferKg: config.chat_defer_kg ?? true,
+      typingEffectEnabled: config.frontend_typing_effect ?? false,
     }),
   setStrategy: (strategy) => set({ selectedStrategy: strategy }),
   setTopK: (topK) => set({ topK }),

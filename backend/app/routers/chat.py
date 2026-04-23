@@ -4,7 +4,7 @@ from fastapi.responses import StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.config.database import get_db
 from app.models.schemas import AppConfig
-from app.services.chat_service import process_chat_stream
+from app.services.chat_service import process_chat_stream, sse_event, _stream_with_keepalive
 from app.config.settings import settings
 
 router = APIRouter()
@@ -22,15 +22,16 @@ async def chat_stream(request: Request):
     debug = data.get("debug", False)
 
     async def event_generator():
-        async for chunk in process_chat_stream(
+        stream = process_chat_stream(
             message=message,
             session_id=session_id,
             agent_type=agent_type,
             top_k=top_k,
             similarity_threshold=similarity_threshold,
             debug=debug,
-        ):
-            yield chunk
+        )
+        async for chunk in _stream_with_keepalive(stream):
+            yield chunk if chunk is not None else sse_event("status", "heartbeat")
 
     return StreamingResponse(
         event_generator(),
@@ -105,4 +106,6 @@ async def get_config():
         ],
         default_top_k=settings.search.top_k,
         default_similarity_threshold=settings.search.similarity_threshold,
+        chat_defer_kg=settings.chat.defer_kg,
+        frontend_typing_effect=settings.frontend.typing_effect,
     )

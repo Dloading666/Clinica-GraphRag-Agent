@@ -10,6 +10,7 @@ from app.config.database import init_postgres, neo4j_manager
 from app.config.settings import settings
 from app.routers import api_router
 from app.services.agent_service import agent_manager
+from app.services.knowledge_base_task_service import knowledge_base_task_manager
 
 
 @asynccontextmanager
@@ -25,6 +26,16 @@ async def lifespan(_app: FastAPI):
         clinical_graph_manager.create_indexes()
     except Exception as exc:  # pragma: no cover - startup warning path
         print(f"Neo4j initialization warning: {exc}")
+
+    try:
+        bootstrap_status = await knowledge_base_task_manager.ensure_seeded()
+        if bootstrap_status.get("active"):
+            print(
+                "[KnowledgeBase] Background bootstrap started: "
+                f"{bootstrap_status.get('reason')}"
+            )
+    except Exception as exc:  # pragma: no cover - startup warning path
+        print(f"Knowledge base bootstrap warning: {exc}")
 
     print("Service startup complete")
     yield

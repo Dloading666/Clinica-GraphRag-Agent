@@ -1,0 +1,87 @@
+version: "2.4"
+
+services:
+  postgres:
+    image: pgvector/pgvector:pg16
+    container_name: clinirag_postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: clinical_qa
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    volumes:
+      - clinirag_postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  neo4j:
+    image: neo4j:5.22.0
+    container_name: clinirag_neo4j
+    restart: unless-stopped
+    environment:
+      NEO4J_AUTH: neo4j/${NEO4J_PASSWORD}
+      NEO4J_PLUGINS: '["apoc", "graph-data-science"]'
+      NEO4J_server_memory_heap_initial__size: 256M
+      NEO4J_server_memory_heap_max__size: 768M
+      NEO4J_server_memory_pagecache_size: 256M
+      NEO4J_dbms_security_procedures_unrestricted: apoc.*,gds.*
+      NEO4J_dbms_security_procedures_allowlist: apoc.*,gds.*
+    volumes:
+      - clinirag_neo4j_data:/data
+      - clinirag_neo4j_plugins:/plugins
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - echo 'RETURN 1;' > /tmp/health.cypher && /var/lib/neo4j/bin/cypher-shell -u neo4j -p ${NEO4J_PASSWORD} -f /tmp/health.cypher >/dev/null 2>&1
+      interval: 20s
+      timeout: 30s
+      retries: 10
+      start_period: 90s
+
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: clinirag_backend
+    restart: unless-stopped
+    env_file:
+      - .env
+    ports:
+      - "127.0.0.1:8001:8000"
+    volumes:
+      - ./knowledge_base:/app/knowledge_base
+    depends_on:
+      postgres:
+        condition: service_healthy
+      neo4j:
+        condition: service_started
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:8000/health || exit 1"]
+      interval: 15s
+      timeout: 10s
+      retries: 8
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: clinirag_frontend
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:3002:80"
+    depends_on:
+      backend:
+        condition: service_started
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O - http://127.0.0.1/ >/dev/null 2>&1 || exit 1"]
+      interval: 15s
+      timeout: 10s
+      retries: 8
+
+volumes:
+  clinirag_postgres_data:
+  clinirag_neo4j_data:
+  clinirag_neo4j_plugins:

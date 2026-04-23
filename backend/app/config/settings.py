@@ -14,6 +14,16 @@ class LLMSettings(BaseSettings):
     model_config = {"env_file": ".env", "extra": "ignore"}
 
 
+class FallbackLLMSettings(BaseSettings):
+    """Optional fallback LLM used when the primary provider is temporarily unavailable."""
+    enabled: bool = Field(default=False, alias="LLM_FALLBACK_ENABLED")
+    api_key: str = Field(default="", alias="LLM_FALLBACK_API_KEY")
+    base_url: str = Field(default="", alias="LLM_FALLBACK_BASE_URL")
+    model: str = Field(default="", alias="LLM_FALLBACK_MODEL")
+
+    model_config = {"env_file": ".env", "extra": "ignore"}
+
+
 class EmbeddingSettings(BaseSettings):
     """Embedding 模型配置（独立 API Key）"""
     api_key: str = Field(default="sk-xxx", alias="EMBEDDING_API_KEY")
@@ -64,6 +74,10 @@ class SearchSettings(BaseSettings):
     """搜索参数配置"""
     top_k: int = Field(default=15, alias="SEARCH_TOP_K")
     similarity_threshold: float = Field(default=0.82, alias="SIMILARITY_THRESHOLD")
+    query_expansion_enabled: bool = Field(default=True, alias="QUERY_EXPANSION_ENABLED")
+    query_expansion_mode: str = Field(default="synonym", alias="QUERY_EXPANSION_MODE")
+    query_expansion_max_terms: int = Field(default=6, alias="QUERY_EXPANSION_MAX_TERMS")
+    query_expansion_apply_to: str = Field(default="naive,hybrid", alias="QUERY_EXPANSION_APPLY_TO")
     local_top_chunks: int = Field(default=3, alias="LOCAL_SEARCH_TOP_CHUNKS")
     local_top_communities: int = Field(default=3, alias="LOCAL_SEARCH_TOP_COMMUNITIES")
     local_top_inside_rels: int = Field(default=10, alias="LOCAL_SEARCH_TOP_INSIDE_RELS")
@@ -92,11 +106,28 @@ class PerformanceSettings(BaseSettings):
     model_config = {"env_file": ".env", "extra": "ignore"}
 
 
+class ChatSettings(BaseSettings):
+    """Chat streaming and latency tuning settings."""
+    stream_pacing_ms: int = Field(default=0, alias="CHAT_STREAM_PACING_MS")
+    defer_kg: bool = Field(default=True, alias="CHAT_DEFER_KG")
+    fast_start_enabled: bool = Field(default=False, alias="CHAT_FAST_START_ENABLED")
+
+    model_config = {"env_file": ".env", "extra": "ignore"}
+
+
+class FrontendSettings(BaseSettings):
+    """Frontend runtime flags exposed through /api/chat/config."""
+    typing_effect: bool = Field(default=False, alias="FRONTEND_TYPING_EFFECT")
+
+    model_config = {"env_file": ".env", "extra": "ignore"}
+
+
 class Settings:
     """全局配置聚合"""
 
     def __init__(self):
         self.llm = LLMSettings()
+        self.llm_fallback = FallbackLLMSettings()
         self.embedding = EmbeddingSettings()
         self.postgres = PostgresSettings()
         self.neo4j = Neo4jSettings()
@@ -104,6 +135,8 @@ class Settings:
         self.search = SearchSettings()
         self.server = ServerSettings()
         self.performance = PerformanceSettings()
+        self.chat = ChatSettings()
+        self.frontend = FrontendSettings()
 
     # 临床领域实体类型
     ENTITY_TYPES = [

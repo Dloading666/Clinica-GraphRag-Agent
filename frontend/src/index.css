@@ -27,6 +27,10 @@ body {
   color: var(--app-text);
 }
 
+body {
+  overflow: hidden;
+}
+
 ::-webkit-scrollbar {
   width: 6px;
   height: 6px;
@@ -121,6 +125,73 @@ body {
   border-color: var(--app-accent);
   box-shadow: 0 0 0 3px rgba(22, 119, 255, 0.08);
   background: #fff;
+}
+
+.clinirag-app-shell--mobile {
+  height: 100dvh;
+  min-height: 100dvh;
+}
+
+.clinirag-mobile-header {
+  background: rgba(255, 255, 255, 0.96) !important;
+  border-bottom: 1px solid #eef2f7;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: calc(10px + env(safe-area-inset-top, 0px)) 14px 10px;
+  height: auto !important;
+  line-height: normal !important;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.06);
+}
+
+.clinirag-header-title {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+
+.clinirag-header-title__icon {
+  font-size: 20px;
+  flex-shrink: 0;
+}
+
+.clinirag-header-title__body {
+  min-width: 0;
+}
+
+.clinirag-mobile-content {
+  min-height: 0;
+  overflow: hidden;
+  background: #fff;
+}
+
+.clinirag-mobile-drawer .ant-drawer-header {
+  padding: 14px 16px;
+  border-bottom: 1px solid #edf1f6;
+}
+
+.clinirag-mobile-drawer .ant-drawer-title {
+  font-size: 15px;
+  font-weight: 700;
+  color: #15233a;
+}
+
+.clinirag-mobile-drawer-panel {
+  flex: 1;
+  min-height: 0;
+  height: 100%;
+  overflow: hidden;
+}
+
+.chat-panel__messages {
+  -webkit-overflow-scrolling: touch;
+}
+
+.chat-panel__composer,
+.chat-panel__notice {
+  flex-shrink: 0;
 }
 
 .detail-tabs > .ant-tabs-nav {
@@ -292,4 +363,24 @@ body {
 
 .markdown-content a:hover {
   text-decoration: underline;
+}
+
+@media (max-width: 960px) {
+  .chat-input-shell {
+    gap: 10px;
+    border-radius: 16px;
+    padding: 10px 12px;
+  }
+
+  .detail-tabs > .ant-tabs-nav .ant-tabs-tab {
+    padding: 12px 2px !important;
+  }
+
+  .detail-tabs > .ant-tabs-nav .ant-tabs-tab-btn {
+    font-size: 11px;
+  }
+
+  .sidebar-scroll-area {
+    padding-bottom: calc(18px + env(safe-area-inset-bottom, 0px));
+  }
 }

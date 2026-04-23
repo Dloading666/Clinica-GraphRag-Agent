@@ -1,4 +1,6 @@
-"""Hybrid RAG Agent - 融合向量检索 + 知识图谱检索"""
+"""Hybrid RAG agent."""
+
+import asyncio
 from typing import Dict, List
 
 from langchain.prompts import ChatPromptTemplate
@@ -13,105 +15,162 @@ from app.config.prompts.clinical_prompts import (
     LOCAL_SEARCH_SYSTEM_PROMPT,
     response_type,
 )
+from app.config.settings import settings
 from app.search.local_search import LocalSearch
 from app.search.naive_search import NaiveSearch
+from app.search.query_expansion import (
+    build_query_expansion_plan,
+    dedupe_source_items,
+    merge_retrieval_stats,
+)
 
 
 class HybridAgent(BaseAgent):
-    """混合检索 Agent：同时使用向量检索和知识图谱检索，融合两者结果"""
+    """Agent that blends vector retrieval and graph retrieval."""
 
     def __init__(self):
         self.naive_search = NaiveSearch()
         self.local_search = LocalSearch()
         super().__init__()
-
-    # ──────────────────────────────────────────────
-    # Tool 配置
-    # ──────────────────────────────────────────────
+        self.require_knowledge_evidence = True
 
     def _setup_tools(self) -> List:
-        def hybrid_search_fn(query: str) -> str:
-            """Hybrid search: combines vector similarity and knowledge graph retrieval"""
-            async def _async():
-                async with AsyncSessionLocal() as db:
-                    # 并发执行两种检索
-                    import asyncio
-                    naive_task = self.naive_search.search(query, db)
-                    local_task = self.local_search.search(query, db)
-                    naive_results, local_result = await asyncio.gather(
-                        naive_task, local_task, return_exceptions=True
+        async def hybrid_search_async(query: str) -> str:
+            async with AsyncSessionLocal() as db:
+                query_plan = build_query_expansion_plan(
+                    query,
+                    enabled=(
+                        settings.search.query_expansion_enabled
+                        and settings.search.query_expansion_mode == "synonym"
+                        and "hybrid"
+                        in {
+                            item.strip().lower()
+                            for item in settings.search.query_expansion_apply_to.split(",")
+                            if item.strip()
+                        }
+                    ),
+                    max_terms=settings.search.query_expansion_max_terms,
+                )
+                naive_task = self.naive_search.search_with_metadata(
+                    query,
+                    db,
+                    query_plan=query_plan,
+                )
+                local_task = self.local_search.search(
+                    query,
+                    db,
+                    query_plan=query_plan,
+                )
+                naive_payload, local_result = await asyncio.gather(
+                    naive_task, local_task, return_exceptions=True
+                )
+
+                parts = []
+                merged_sources = []
+                merged_stats = merge_retrieval_stats()
+
+                if isinstance(naive_payload, dict):
+                    naive_results = naive_payload.get("items", [])
+                    merged_stats = merge_retrieval_stats(
+                        merged_stats,
+                        naive_payload.get("stats", {}),
                     )
-
-                    parts = []
-
-                    # 向量检索结果
-                    if isinstance(naive_results, list) and naive_results:
-                        parts.append("## 向量检索结果")
+                    merged_sources.extend(naive_payload.get("sources", []))
+                    if naive_results:
+                        parts.append("## Vector Retrieval")
                         parts.append(self.naive_search.format_context(naive_results))
 
-                    # 图谱检索结果
-                    if isinstance(local_result, dict):
-                        graph_ctx = self.local_search.format_context(local_result)
-                        if graph_ctx and "未检索到" not in graph_ctx:
-                            parts.append("## 知识图谱检索结果")
-                            parts.append(graph_ctx)
+                if isinstance(local_result, dict):
+                    merged_stats = merge_retrieval_stats(
+                        merged_stats,
+                        local_result.get("stats", {}),
+                    )
+                    merged_sources.extend(local_result.get("sources", []))
+                    graph_ctx = self.local_search.format_context(local_result)
+                    if graph_ctx and "未检索到" not in graph_ctx:
+                        parts.append("## Graph Retrieval")
+                        parts.append(graph_ctx)
 
-                    if parts:
-                        return "\n\n".join(parts)
-                    return "未检索到相关临床资料。"
+                self._set_retrieval_metadata(
+                    stats=merged_stats,
+                    source_items=dedupe_source_items(merged_sources),
+                )
+                return "\n\n".join(parts) if parts else "未检索到相关临床资料。"
 
-            return run_async(_async())
+        def hybrid_search_fn(query: str) -> str:
+            """Combine vector similarity and graph retrieval in one context."""
+
+            return run_async(hybrid_search_async(query))
 
         return [
-            Tool(
-                name="hybrid_retriever",
+            Tool.from_function(
                 func=hybrid_search_fn,
+                coroutine=hybrid_search_async,
+                name="hybrid_retriever",
                 description=(
-                    "混合检索：同时使用向量相似度和知识图谱搜索临床知识库。"
-                    "适合需要精确文献匹配和实体关系分析的综合临床问题。"
-                    "输入：临床问题或关键词。"
+                    "Combine vector retrieval and graph retrieval for questions that "
+                    "need both document evidence and entity relationships."
                 ),
             )
         ]
 
-    # ──────────────────────────────────────────────
-    # 图谱边
-    # ──────────────────────────────────────────────
-
     def _add_retrieval_edges(self, workflow) -> None:
         workflow.add_edge("retrieve", "generate")
-
-    # ──────────────────────────────────────────────
-    # 关键词提取
-    # ──────────────────────────────────────────────
 
     def _extract_keywords(self, query: str) -> Dict[str, List[str]]:
         return {"low_level": [], "high_level": []}
 
-    # ──────────────────────────────────────────────
-    # Generate 节点
-    # ──────────────────────────────────────────────
+    def _build_payload(self, messages) -> Dict[str, str]:
+        try:
+            question = self._get_latest_user_message(messages) or "Unknown question"
+            docs = (
+                self._normalize_retrieval_context(messages[-1].content)
+                if len(messages) > 1
+                else ""
+            )
+        except Exception:
+            question = "Unknown question"
+            docs = ""
+        return {"question": question, "context": docs}
 
     def _generate_node(self, state) -> Dict:
-        messages = state["messages"]
-        try:
-            question = messages[0].content if messages else "未知问题"
-            docs = messages[-1].content if len(messages) > 1 else ""
-        except Exception:
-            question, docs = "未知问题", ""
-
-        prompt = ChatPromptTemplate.from_messages([
-            ("system", LOCAL_SEARCH_SYSTEM_PROMPT),
-            ("human", LOCAL_SEARCH_CONTEXT_PROMPT),
-        ])
+        payload = self._build_payload(state["messages"])
+        prompt = ChatPromptTemplate.from_messages(
+            [
+                ("system", LOCAL_SEARCH_SYSTEM_PROMPT),
+                ("human", LOCAL_SEARCH_CONTEXT_PROMPT),
+            ]
+        )
         chain = prompt | self.llm | StrOutputParser()
         try:
-            response = chain.invoke({
-                "context": docs,
-                "input": question,
-                "response_type": response_type,
-            })
-            self._log_execution("generate", question, response[:200])
+            response = chain.invoke(
+                {
+                    "context": payload["context"],
+                    "input": payload["question"],
+                    "response_type": response_type,
+                }
+            )
+            self._log_execution("generate", payload["question"], response[:200])
             return {"messages": [AIMessage(content=response)]}
-        except Exception as e:
-            return {"messages": [AIMessage(content=f"生成回答时出错：{str(e)}")]}
+        except Exception as exc:
+            return {"messages": [AIMessage(content=f"Answer generation failed: {exc}")]}
+
+    async def _stream_response(self, state) -> Dict:
+        payload = self._build_payload(state["messages"])
+        prompt = ChatPromptTemplate.from_messages(
+            [
+                ("system", LOCAL_SEARCH_SYSTEM_PROMPT),
+                ("human", LOCAL_SEARCH_CONTEXT_PROMPT),
+            ]
+        )
+        async for chunk in self._stream_prompt_response(
+            prompt,
+            {
+                "context": payload["context"],
+                "input": payload["question"],
+                "response_type": response_type,
+            },
+            node_name="generate",
+            log_input=payload["question"],
+        ):
+            yield chunk

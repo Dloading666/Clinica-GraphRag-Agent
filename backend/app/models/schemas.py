@@ -107,3 +107,5 @@ class AppConfig(BaseModel):
     search_strategies: List[Dict[str, str]]
     default_top_k: int
     default_similarity_threshold: float
+    chat_defer_kg: bool = True
+    frontend_typing_effect: bool = False
