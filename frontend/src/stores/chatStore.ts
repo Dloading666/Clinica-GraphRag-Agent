@@ -20,8 +20,42 @@ function getLatestAssistantId(messages: Message[]): string | undefined {
   return [...messages].reverse().find((message) => message.role === 'assistant')?.id
 }
 
-function hasSameTraceStep(traceStep: TraceStep, step: ThinkingStep) {
-  return traceStep.node === step.label && (traceStep.output ?? '') === step.content
+function hasSameThinkingContent(a: ThinkingStep, b: ThinkingStep) {
+  return (a.content ?? '').trim() === (b.content ?? '').trim()
+}
+
+function mergeThinkingStep(steps: ThinkingStep[], step: ThinkingStep) {
+  const duplicateIndex = steps.findIndex(
+    (existing) =>
+      existing.node === step.node &&
+      existing.label === step.label &&
+      hasSameThinkingContent(existing, step)
+  )
+
+  if (duplicateIndex >= 0) {
+    return steps.map((existing, index) =>
+      index === duplicateIndex
+        ? { ...existing, ...step, done: existing.done || step.done }
+        : existing
+    )
+  }
+
+  if (step.done) {
+    const pendingIndex = steps.findIndex(
+      (existing) =>
+        existing.node === step.node &&
+        existing.label === step.label &&
+        !existing.done
+    )
+
+    if (pendingIndex >= 0) {
+      return steps.map((existing, index) =>
+        index === pendingIndex ? step : existing
+      )
+    }
+  }
+
+  return [...steps, step]
 }
 
 interface ChatStore {
@@ -129,14 +163,18 @@ export const useChatStore = create<ChatStore>((set, get) => ({
   },
 
   addThinkingStep: (step) => {
-    set((state) => ({
-      currentThinkingSteps: [...state.currentThinkingSteps, step],
-      currentTraceSteps: state.currentTraceSteps.some((traceStep) =>
-        hasSameTraceStep(traceStep, step)
+    set((state) => {
+      const currentThinkingSteps = mergeThinkingStep(
+        state.currentThinkingSteps,
+        step
       )
-        ? state.currentTraceSteps
-        : [...state.currentTraceSteps, thinkingToTrace(step)],
-    }))
+      const currentTraceSteps = currentThinkingSteps.map(thinkingToTrace)
+
+      return {
+        currentThinkingSteps,
+        currentTraceSteps,
+      }
+    })
   },
 
   setKgData: (id, data) => {

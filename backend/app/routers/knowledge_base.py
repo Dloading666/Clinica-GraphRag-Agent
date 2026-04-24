@@ -30,8 +30,9 @@ def _resolve_allowed_ingest_path(raw_path: str) -> Path:
 
 
 @router.get("/documents")
-async def list_documents(db: AsyncSession = Depends(get_db)):
+async def list_documents(request: Request, db: AsyncSession = Depends(get_db)):
     """List all ingested documents."""
+    require_admin_api_key(request)
     return await ingestion_service.get_documents(db)
 
 
@@ -90,6 +91,7 @@ async def rebuild_graph(request: Request):
 
 
 @router.get("/status")
-async def knowledge_base_status():
+async def knowledge_base_status(request: Request):
     """Return the current background ingestion/build status plus DB counts."""
+    require_admin_api_key(request)
     return await knowledge_base_task_manager.get_status()
