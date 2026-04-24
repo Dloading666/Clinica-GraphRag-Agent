@@ -290,6 +290,8 @@ async def _stream_with_keepalive(
 ) -> AsyncGenerator[Optional[str], None]:
     iterator = stream.__aiter__()
     pending = asyncio.create_task(iterator.__anext__())
+    last_progress_at = time.perf_counter()
+    max_stall_seconds = max(15, settings.chat.max_stall_seconds)
 
     while True:
         done, _ = await asyncio.wait(
@@ -299,6 +301,18 @@ async def _stream_with_keepalive(
         )
 
         if not done:
+            stalled_for = time.perf_counter() - last_progress_at
+            if stalled_for >= max_stall_seconds:
+                pending.cancel()
+                try:
+                    await pending
+                except BaseException:
+                    pass
+                yield sse_event(
+                    "error",
+                    f"模型响应超时：连续 {int(stalled_for)} 秒未返回新内容，请重试。",
+                )
+                break
             yield None
             continue
 
@@ -307,5 +321,6 @@ async def _stream_with_keepalive(
         except StopAsyncIteration:
             break
         else:
+            last_progress_at = time.perf_counter()
             yield chunk
             pending = asyncio.create_task(iterator.__anext__())

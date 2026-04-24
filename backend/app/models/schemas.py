@@ -1,24 +1,31 @@
-"""Pydantic 请求/响应模型"""
+"""Pydantic request and response models."""
+
+from datetime import datetime
+from typing import Any, Dict, List, Literal, Optional
 
 from pydantic import BaseModel, Field
-from typing import Optional, List, Dict, Any
-from datetime import datetime
 
-
-# ===== 对话相关 =====
 
 class ChatRequest(BaseModel):
-    """对话请求"""
-    message: str
+    """Model definition."""
+
+    message: str = Field(min_length=1, max_length=8000)
     session_id: Optional[str] = None
-    agent_type: str = "naive_rag"
-    top_k: int = 15
-    similarity_threshold: float = 0.82
+    agent_type: Literal[
+        "naive_rag",
+        "graph_rag",
+        "hybrid_rag",
+        "fusion_rag",
+        "deep_research",
+    ] = "naive_rag"
+    top_k: int = Field(default=15, ge=1, le=200)
+    similarity_threshold: float = Field(default=0.82, ge=0.0, le=1.0)
     debug: bool = False
 
 
 class ChatResponse(BaseModel):
-    """对话响应"""
+    """Model definition."""
+
     answer: str
     session_id: str
     execution_log: Optional[List[Dict[str, Any]]] = None
@@ -28,15 +35,15 @@ class ChatResponse(BaseModel):
 
 
 class StreamEvent(BaseModel):
-    """SSE 流式事件"""
-    event: str  # status, answer, execution_log, kg_data, done, error
+    """SSE event payload."""
+
+    event: str
     data: Any
 
 
-# ===== 知识库相关 =====
-
 class DocumentInfo(BaseModel):
-    """文档信息"""
+    """Model definition."""
+
     id: int
     filename: str
     file_type: Optional[str] = None
@@ -45,7 +52,8 @@ class DocumentInfo(BaseModel):
 
 
 class ChunkInfo(BaseModel):
-    """文本块信息"""
+    """Model definition."""
+
     id: str
     content: str
     chapter: Optional[str] = None
@@ -54,10 +62,9 @@ class ChunkInfo(BaseModel):
     document_name: Optional[str] = None
 
 
-# ===== 知识图谱相关 =====
-
 class KGNode(BaseModel):
-    """知识图谱节点"""
+    """Model definition."""
+
     id: str
     label: str
     type: str
@@ -66,7 +73,8 @@ class KGNode(BaseModel):
 
 
 class KGLink(BaseModel):
-    """知识图谱边"""
+    """Model definition."""
+
     source: str
     target: str
     label: str
@@ -74,33 +82,33 @@ class KGLink(BaseModel):
 
 
 class KGData(BaseModel):
-    """知识图谱数据"""
+    """Model definition."""
+
     nodes: List[KGNode] = []
     links: List[KGLink] = []
 
 
 class ReasoningRequest(BaseModel):
-    """图谱推理请求"""
-    type: str  # shortest_path, one_two_hop, common_neighbors, entity_cycles, influence
+    """Model definition."""
+
+    type: Literal["shortest_path", "entity_neighbors"]
     entity_a: Optional[str] = None
     entity_b: Optional[str] = None
-    max_depth: int = 2
+    max_depth: int = Field(default=2, ge=1, le=3)
     algorithm: str = "dijkstra"
 
 
-# ===== 分析相关 =====
-
 class PerformanceMetrics(BaseModel):
-    """性能指标"""
+    """Model definition."""
+
     total_latency: float
     token_count: int = 0
     steps: List[Dict[str, Any]] = []
 
 
-# ===== 配置相关 =====
-
 class AppConfig(BaseModel):
-    """前端可获取的应用配置"""
+    """Frontend-readable application config."""
+
     entity_types: List[str]
     relation_types: List[str]
     example_questions: List[str]

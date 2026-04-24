@@ -1,12 +1,13 @@
 """Graph RAG agent."""
 
+import asyncio
 import json
 import re
-from typing import Dict, List
+from typing import Any, Dict, List
 
 from langchain.prompts import ChatPromptTemplate
 from langchain.tools import Tool
-from langchain_core.messages import AIMessage
+from langchain_core.messages import AIMessage, BaseMessage
 from langchain_core.output_parsers import StrOutputParser
 from langgraph.graph import END
 
@@ -23,6 +24,7 @@ from app.config.prompts.clinical_prompts import (
 from app.models.llm_factory import content_to_text
 from app.search.global_search import GlobalSearch
 from app.search.local_search import LocalSearch
+from app.search.query_expansion import has_visible_evidence
 
 
 class GraphAgent(BaseAgent):
@@ -162,6 +164,58 @@ class GraphAgent(BaseAgent):
         except Exception as exc:
             return {"messages": [AIMessage(content=f"Answer generation failed: {exc}")]}
 
+    async def _handle_missing_tool_calls(
+        self,
+        query: str,
+        messages: List[BaseMessage],
+        response: BaseMessage | None = None,
+    ) -> Dict[str, Any] | None:
+        if not self.require_knowledge_evidence:
+            return None
+
+        del response
+        async with AsyncSessionLocal() as db:
+            local_result = await self.local_search.search(query, db)
+
+        local_stats = local_result.get("stats")
+        local_sources = local_result.get("sources")
+        local_context = self.local_search.format_context(local_result)
+        self._set_retrieval_metadata(stats=local_stats, source_items=local_sources)
+
+        if has_visible_evidence(local_stats):
+            self._log_execution("agent", query, "forced_retrieval:local_retriever")
+            self._log_execution("retrieve", query, content_to_text(local_context))
+            messages.append(AIMessage(content=local_context))
+            return {
+                "messages": messages,
+                "direct_answer": "",
+                "forced_retrieval_tool": "local_retriever",
+            }
+
+        global_payload = await asyncio.to_thread(
+            self.global_search.search_with_metadata,
+            query,
+            1,
+        )
+        global_stats = global_payload.get("stats")
+        global_sources = global_payload.get("sources")
+        self._set_retrieval_metadata(
+            stats=global_stats,
+            source_items=global_sources,
+        )
+        global_context = global_payload.get("context", "")
+        if has_visible_evidence(global_stats):
+            self._log_execution("agent", query, "forced_retrieval:global_retriever")
+            self._log_execution("retrieve", query, content_to_text(global_context))
+            messages.append(AIMessage(content=global_context))
+            return {
+                "messages": messages,
+                "direct_answer": "",
+                "forced_retrieval_tool": "global_retriever",
+            }
+
+        return await self._attempt_web_search_fallback(query, messages)
+
     def _reduce_node(self, state) -> Dict:
         payload = self._build_question_and_docs(state["messages"])
         prompt = ChatPromptTemplate.from_messages(
@@ -186,7 +240,8 @@ class GraphAgent(BaseAgent):
 
     async def _stream_response(self, state) -> Dict:
         payload = self._build_question_and_docs(state["messages"])
-        route = self._grade_documents(state)
+        forced_tool_name = state.get("forced_retrieval_tool")
+        route = "reduce" if forced_tool_name == "global_retriever" else self._grade_documents(state)
 
         if route == "reduce":
             prompt = ChatPromptTemplate.from_messages(

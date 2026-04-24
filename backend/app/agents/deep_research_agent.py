@@ -16,13 +16,16 @@ from langgraph.graph.message import add_messages
 
 from app.agents.base import BaseAgent, run_async, ThinkingEvent
 from app.config.database import AsyncSessionLocal
+from app.config.settings import settings
 from app.config.prompts.clinical_prompts import (
     LOCAL_SEARCH_SYSTEM_PROMPT,
     response_type,
 )
 from app.models.llm_factory import get_embeddings, get_llm
+from app.search.global_search import GlobalSearch
 from app.search.local_search import LocalSearch
 from app.search.naive_search import NaiveSearch
+from app.search.web_search import WebSearch
 from app.search.query_expansion import (
     dedupe_source_items,
     empty_retrieval_stats,
@@ -131,6 +134,8 @@ class DeepResearchAgent:
         self.embeddings = get_embeddings()
         self.naive_search = NaiveSearch()
         self.local_search = LocalSearch()
+        self.global_search = GlobalSearch()
+        self.web_search = WebSearch()
         self.memory = MemorySaver()
         self.execution_log: List[Dict] = []
         self._latest_retrieval_stats: Dict[str, Any] = empty_retrieval_stats()
@@ -325,12 +330,56 @@ class DeepResearchAgent:
             return "synthesize"
         return "continue"
 
+    async def _search_state_async(self, state: ResearchState) -> Dict[str, Any]:
+        """Run sub-question retrieval directly on the active event loop."""
+        sub_questions = state.get("sub_questions", [])
+        existing_evidence = list(state.get("evidence", []))
+        sub_answers = list(state.get("sub_answers", []))
+
+        for sub_q in sub_questions:
+            self._log("search", sub_q, "")
+            try:
+                payload = await self._search_for_question(sub_q)
+                context = payload.get("context", "")
+                stats = payload.get("stats", {})
+                sources = payload.get("sources", [])
+                evidence_total = int(stats.get("evidence_total", 0) or 0)
+
+                if evidence_total > 0 and context:
+                    existing_evidence.append(
+                        {
+                            "question": sub_q,
+                            "context": context,
+                            "summary": context[:300],
+                            "iteration": state.get("current_iteration", 0),
+                            "stats": stats,
+                            "sources": sources,
+                        }
+                    )
+                    sub_answers.append({"question": sub_q, "context": context[:500]})
+                    self._latest_retrieval_stats = merge_retrieval_stats(
+                        self._latest_retrieval_stats,
+                        stats,
+                    )
+                    self._latest_source_items = dedupe_source_items(
+                        [*self._latest_source_items, *sources]
+                    )
+                    self._log("search", sub_q, context[:200])
+                else:
+                    self._log("search", sub_q, "no_visible_evidence")
+            except Exception as exc:
+                print(f"[DeepResearch] sub-question retrieval failed ({sub_q}): {exc}")
+
+        return {"evidence": existing_evidence, "sub_answers": sub_answers}
+
     async def _search_for_question(self, question: str) -> Dict[str, Any]:
         async with AsyncSessionLocal() as db:
             naive_task = self.naive_search.search_with_metadata(question, db, top_k=5)
             local_task = self.local_search.search(question, db)
             naive_payload, local_result = await asyncio.gather(
-                naive_task, local_task, return_exceptions=True
+                naive_task,
+                local_task,
+                return_exceptions=True,
             )
             parts = []
             merged_stats = merge_retrieval_stats()
@@ -354,6 +403,47 @@ class DeepResearchAgent:
                 ctx = self.local_search.format_context(local_result)
                 if int(local_stats.get("evidence_total", 0) or 0) > 0 and ctx:
                     parts.append(ctx)
+
+            if int(merged_stats.get("evidence_total", 0) or 0) <= 0:
+                try:
+                    global_payload = await asyncio.wait_for(
+                        asyncio.to_thread(
+                            self.global_search.search_with_metadata,
+                            question,
+                            1,
+                        ),
+                        timeout=12,
+                    )
+                except Exception:
+                    global_payload = None
+
+                if isinstance(global_payload, dict):
+                    global_stats = global_payload.get("stats", {})
+                    merged_stats = merge_retrieval_stats(
+                        merged_stats,
+                        global_stats,
+                    )
+                    merged_sources.extend(global_payload.get("sources", []))
+                    ctx = str(global_payload.get("context", "")).strip()
+                    if int(global_stats.get("evidence_total", 0) or 0) > 0 and ctx:
+                        parts.append(ctx)
+
+            if int(merged_stats.get("evidence_total", 0) or 0) <= 0 and settings.search.web_search_enabled:
+                try:
+                    web_payload = await self.web_search.search_with_metadata(question, max_results=4)
+                except Exception:
+                    web_payload = None
+
+                if isinstance(web_payload, dict):
+                    web_stats = web_payload.get("stats", {})
+                    merged_stats = merge_retrieval_stats(
+                        merged_stats,
+                        web_stats,
+                    )
+                    merged_sources.extend(web_payload.get("sources", []))
+                    ctx = str(web_payload.get("context", "")).strip()
+                    if int(web_stats.get("evidence_total", 0) or 0) > 0 and ctx:
+                        parts.append(ctx)
             return {
                 "context": "\n\n".join(parts) if parts else "未检索到相关资料",
                 "stats": merged_stats,
@@ -588,7 +678,7 @@ async def _stable_deep_research_ask_stream(
                     done=False,
                 ),
             )
-            search_output = await asyncio.to_thread(self._search_node, state)
+            search_output = await self._search_state_async(state)
             state.update(search_output)
             retrieve_latency_ms = int((time.perf_counter() - stream_start) * 1000)
             sub_answers = state.get("sub_answers", [])

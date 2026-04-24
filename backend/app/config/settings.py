@@ -1,15 +1,23 @@
-"""应用配置 - 从环境变量加载所有配置项"""
+"""Application settings loaded from environment variables."""
 
-from pydantic_settings import BaseSettings
 from pydantic import Field
-from typing import Optional
+from pydantic_settings import BaseSettings
 
 
 class LLMSettings(BaseSettings):
-    """LLM 模型配置（独立 API Key）"""
+    """LLM provider configuration."""
     api_key: str = Field(default="sk-xxx", alias="LLM_API_KEY")
-    base_url: str = Field(default="https://dashscope.aliyuncs.com/compatible-mode/v1", alias="LLM_BASE_URL")
+    base_url: str = Field(
+        default="https://dashscope.aliyuncs.com/compatible-mode/v1",
+        alias="LLM_BASE_URL",
+    )
     model: str = Field(default="qwen-turbo", alias="LLM_MODEL")
+    timeout_seconds: int = Field(default=45, alias="LLM_TIMEOUT_SECONDS")
+    stream_timeout_seconds: int = Field(
+        default=90,
+        alias="LLM_STREAM_TIMEOUT_SECONDS",
+    )
+    disable_thinking: bool = Field(default=True, alias="LLM_DISABLE_THINKING")
 
     model_config = {"env_file": ".env", "extra": "ignore"}
 
@@ -25,9 +33,12 @@ class FallbackLLMSettings(BaseSettings):
 
 
 class EmbeddingSettings(BaseSettings):
-    """Embedding 模型配置（独立 API Key）"""
+    """Embedding provider configuration."""
     api_key: str = Field(default="sk-xxx", alias="EMBEDDING_API_KEY")
-    base_url: str = Field(default="https://dashscope.aliyuncs.com/compatible-mode/v1", alias="EMBEDDING_BASE_URL")
+    base_url: str = Field(
+        default="https://dashscope.aliyuncs.com/compatible-mode/v1",
+        alias="EMBEDDING_BASE_URL",
+    )
     model: str = Field(default="text-embedding-v2", alias="EMBEDDING_MODEL")
     dimension: int = Field(default=1536, alias="EMBEDDING_DIMENSION")
 
@@ -35,7 +46,7 @@ class EmbeddingSettings(BaseSettings):
 
 
 class PostgresSettings(BaseSettings):
-    """PostgreSQL 数据库配置"""
+    """PostgreSQL database configuration."""
     host: str = Field(default="localhost", alias="POSTGRES_HOST")
     port: int = Field(default=5432, alias="POSTGRES_PORT")
     db: str = Field(default="clinical_qa", alias="POSTGRES_DB")
@@ -44,7 +55,10 @@ class PostgresSettings(BaseSettings):
 
     @property
     def async_url(self) -> str:
-        return f"postgresql+asyncpg://{self.user}:{self.password}@{self.host}:{self.port}/{self.db}"
+        return (
+            f"postgresql+asyncpg://{self.user}:{self.password}@"
+            f"{self.host}:{self.port}/{self.db}"
+        )
 
     @property
     def sync_url(self) -> str:
@@ -54,7 +68,7 @@ class PostgresSettings(BaseSettings):
 
 
 class Neo4jSettings(BaseSettings):
-    """Neo4j 图数据库配置"""
+    """Neo4j graph database configuration."""
     uri: str = Field(default="neo4j://localhost:7687", alias="NEO4J_URI")
     username: str = Field(default="neo4j", alias="NEO4J_USERNAME")
     password: str = Field(default="clinical_neo4j_2024", alias="NEO4J_PASSWORD")
@@ -63,7 +77,7 @@ class Neo4jSettings(BaseSettings):
 
 
 class ChunkSettings(BaseSettings):
-    """文本分块配置"""
+    """Configuration section."""
     chunk_size: int = Field(default=800, alias="CHUNK_SIZE")
     chunk_overlap: int = Field(default=200, alias="CHUNK_OVERLAP")
 
@@ -71,25 +85,34 @@ class ChunkSettings(BaseSettings):
 
 
 class SearchSettings(BaseSettings):
-    """搜索参数配置"""
+    """Configuration section."""
     top_k: int = Field(default=15, alias="SEARCH_TOP_K")
     similarity_threshold: float = Field(default=0.82, alias="SIMILARITY_THRESHOLD")
     query_expansion_enabled: bool = Field(default=True, alias="QUERY_EXPANSION_ENABLED")
     query_expansion_mode: str = Field(default="synonym", alias="QUERY_EXPANSION_MODE")
     query_expansion_max_terms: int = Field(default=6, alias="QUERY_EXPANSION_MAX_TERMS")
-    query_expansion_apply_to: str = Field(default="naive,hybrid", alias="QUERY_EXPANSION_APPLY_TO")
+    query_expansion_apply_to: str = Field(
+        default="naive,hybrid,graph,fusion,deep_research",
+        alias="QUERY_EXPANSION_APPLY_TO",
+    )
     local_top_chunks: int = Field(default=3, alias="LOCAL_SEARCH_TOP_CHUNKS")
     local_top_communities: int = Field(default=3, alias="LOCAL_SEARCH_TOP_COMMUNITIES")
     local_top_inside_rels: int = Field(default=10, alias="LOCAL_SEARCH_TOP_INSIDE_RELS")
     local_top_outside_rels: int = Field(default=10, alias="LOCAL_SEARCH_TOP_OUTSIDE_RELS")
     local_top_entities: int = Field(default=10, alias="LOCAL_SEARCH_TOP_ENTITIES")
     hybrid_entity_limit: int = Field(default=15, alias="HYBRID_SEARCH_ENTITY_LIMIT")
+    web_search_enabled: bool = Field(default=True, alias="WEB_SEARCH_ENABLED")
+    web_search_top_k: int = Field(default=5, alias="WEB_SEARCH_TOP_K")
+    web_search_timeout_seconds: int = Field(
+        default=12,
+        alias="WEB_SEARCH_TIMEOUT_SECONDS",
+    )
 
     model_config = {"env_file": ".env", "extra": "ignore"}
 
 
 class ServerSettings(BaseSettings):
-    """服务器配置"""
+    """Server configuration."""
     host: str = Field(default="0.0.0.0", alias="SERVER_HOST")
     port: int = Field(default=8000, alias="SERVER_PORT")
     workers: int = Field(default=2, alias="SERVER_WORKERS")
@@ -98,7 +121,7 @@ class ServerSettings(BaseSettings):
 
 
 class PerformanceSettings(BaseSettings):
-    """性能配置"""
+    """Performance configuration."""
     max_workers: int = Field(default=4, alias="MAX_WORKERS")
     batch_size: int = Field(default=100, alias="BATCH_SIZE")
     embedding_batch_size: int = Field(default=64, alias="EMBEDDING_BATCH_SIZE")
@@ -111,6 +134,16 @@ class ChatSettings(BaseSettings):
     stream_pacing_ms: int = Field(default=0, alias="CHAT_STREAM_PACING_MS")
     defer_kg: bool = Field(default=True, alias="CHAT_DEFER_KG")
     fast_start_enabled: bool = Field(default=False, alias="CHAT_FAST_START_ENABLED")
+    max_stall_seconds: int = Field(default=90, alias="CHAT_MAX_STALL_SECONDS")
+    context_max_turns: int = Field(default=4, alias="CHAT_CONTEXT_MAX_TURNS")
+    context_message_char_limit: int = Field(
+        default=1200,
+        alias="CHAT_CONTEXT_MESSAGE_CHAR_LIMIT",
+    )
+    context_topic_reset_enabled: bool = Field(
+        default=True,
+        alias="CHAT_CONTEXT_TOPIC_RESET_ENABLED",
+    )
 
     model_config = {"env_file": ".env", "extra": "ignore"}
 
@@ -122,8 +155,57 @@ class FrontendSettings(BaseSettings):
     model_config = {"env_file": ".env", "extra": "ignore"}
 
 
+class SecuritySettings(BaseSettings):
+    """Lightweight anti-abuse settings for public demos."""
+
+    proxy_shared_token: str = Field(default="", alias="PROXY_SHARED_TOKEN")
+    admin_api_key: str = Field(default="", alias="ADMIN_API_KEY")
+    allowed_origins_raw: str = Field(
+        default=(
+            "https://clinirag.top,https://www.clinirag.top,"
+            "http://localhost:3000,http://127.0.0.1:3000,"
+            "http://localhost:3002,http://127.0.0.1:3002"
+        ),
+        alias="ALLOWED_ORIGINS",
+    )
+    allowed_hosts_raw: str = Field(
+        default="clinirag.top,www.clinirag.top,localhost,127.0.0.1",
+        alias="ALLOWED_HOSTS",
+    )
+    public_session_access: bool = Field(default=False, alias="PUBLIC_SESSION_ACCESS")
+    allow_public_debug: bool = Field(default=False, alias="ALLOW_PUBLIC_DEBUG")
+    chat_rate_limit_count: int = Field(default=12, alias="CHAT_RATE_LIMIT_COUNT")
+    chat_rate_limit_window_seconds: int = Field(
+        default=300,
+        alias="CHAT_RATE_LIMIT_WINDOW_SECONDS",
+    )
+    chat_max_concurrent_per_ip: int = Field(
+        default=2,
+        alias="CHAT_MAX_CONCURRENT_PER_IP",
+    )
+    chat_max_message_chars: int = Field(default=4000, alias="CHAT_MAX_MESSAGE_CHARS")
+    chat_max_top_k: int = Field(default=20, alias="CHAT_MAX_TOP_K")
+    max_reasoning_depth: int = Field(default=3, alias="MAX_REASONING_DEPTH")
+    agent_cache_size: int = Field(default=64, alias="AGENT_CACHE_SIZE")
+    agent_ttl_seconds: int = Field(default=3600, alias="AGENT_TTL_SECONDS")
+
+    model_config = {"env_file": ".env", "extra": "ignore"}
+
+    @staticmethod
+    def _split_csv(value: str) -> list[str]:
+        return [item.strip() for item in value.split(",") if item.strip()]
+
+    @property
+    def allowed_origins(self) -> list[str]:
+        return self._split_csv(self.allowed_origins_raw)
+
+    @property
+    def allowed_hosts(self) -> list[str]:
+        return self._split_csv(self.allowed_hosts_raw)
+
+
 class Settings:
-    """全局配置聚合"""
+    """Configuration section."""
 
     def __init__(self):
         self.llm = LLMSettings()
@@ -137,27 +219,40 @@ class Settings:
         self.performance = PerformanceSettings()
         self.chat = ChatSettings()
         self.frontend = FrontendSettings()
+        self.security = SecuritySettings()
 
-    # 临床领域实体类型
     ENTITY_TYPES = [
-        "疾病", "症状", "药物", "治疗方法", "中药方剂",
-        "经络穴位", "病理机制", "药理作用", "毒副作用", "适应症"
+        "疾病",
+        "症状",
+        "药物",
+        "治疗方法",
+        "中药方剂",
+        "经络穴位",
+        "病理机制",
+        "药理作用",
+        "毒副作用",
+        "适应症",
     ]
 
-    # 临床领域关系类型
     RELATION_TYPES = [
-        "治疗", "引起", "属于", "配伍", "禁忌",
-        "作用于", "表现为", "包含", "对应", "拮抗"
+        "治疗",
+        "引起",
+        "属于",
+        "配伍",
+        "禁忌",
+        "作用于",
+        "表现为",
+        "包含",
+        "对应",
+        "拮抗",
     ]
 
-    # 示例问题
     EXAMPLE_QUESTIONS = [
         "头痛应该怎么进行治疗？",
         "心脏不舒服加上高血压，怎么治疗？",
-        "感冒了怎么办？",
+        "口服药效果不稳定，和首过效应有关吗？",
         "全身一热就全身发痒，这是什么原因？",
     ]
 
 
-# 单例
 settings = Settings()

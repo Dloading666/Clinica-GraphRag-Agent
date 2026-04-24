@@ -13,8 +13,8 @@ export const KNOWLEDGE_EXAMPLE_QUESTIONS: KnowledgeExampleQuestion[] = [
     text: '心脏不舒服加上高血压，怎么治疗？',
   },
   {
-    source: '常见症状',
-    text: '感冒了怎么办？',
+    source: '用药问题',
+    text: '口服药效果不稳定，和首过效应有关吗？',
   },
   {
     source: '皮肤症状',

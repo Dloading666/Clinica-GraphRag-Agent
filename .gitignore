@@ -1,7 +1,9 @@
-# 环境变量（含 API Key，禁止提交）
+# ?????? API Key??????
 .env
 .env.local
 .env.*.local
+.security-runtime.env
+.admin-api-key
 
 # Python
 __pycache__/
@@ -27,10 +29,10 @@ postgres_data/
 neo4j_data/
 neo4j_plugins/
 
-# 知识库文档（可能含版权内容）
+# ??????????????
 knowledge_base/
 
-# 系统文件
+# ????
 .DS_Store
 Thumbs.db
 desktop.ini
@@ -41,12 +43,22 @@ desktop.ini
 *.swp
 *.swo
 
-# 日志
+# ??
 *.log
 logs/
 
-# 测试缓存
+# ????
 .pytest_cache/
 .mypy_cache/
 htmlcov/
 .coverage
+
+# Local backup/runtime artifacts
+backups/
+frontend-dist/
+frontend-sync-temp/
+*.bak
+*.bak2
+*.new
+frontend-dist.zip
+/knowledge_base

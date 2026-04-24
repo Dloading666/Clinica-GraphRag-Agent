@@ -47,9 +47,17 @@ export interface KGLink {
   weight?: number
 }
 
+export interface KGMeta {
+  mode?: 'query' | 'source_items' | 'full'
+  community_ids?: string[]
+  source_entity_names?: string[]
+  note?: string
+}
+
 export interface KGData {
   nodes: KGNode[]
   links: KGLink[]
+  meta?: KGMeta
 }
 
 export type KGStatus = 'idle' | 'loading' | 'ready' | 'error'

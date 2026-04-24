@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef } from 'react'
 import { api, createSSEConnection } from '../api'
+import { buildKgFromSourceItems } from '../lib/sourceGraph'
 import { useChatStore } from '../stores/chatStore'
 import { useConfigStore } from '../stores/configStore'
 import type { DoneData, KGData, ThinkingStep, TraceStep } from '../types'
@@ -211,7 +212,16 @@ export function useChat() {
   }, [finalizeIfReady, flushBufferedAnswer, typingEffectEnabled])
 
   const hydrateKgForMessage = useCallback(
-    async (query: string, assistantId: string) => {
+    async (query: string, assistantId: string, doneData?: DoneData | null) => {
+      const sourceItems = doneData?.source_items ?? []
+      if (sourceItems.length > 0) {
+        const graph = buildKgFromSourceItems(sourceItems)
+        if (graph.nodes.length > 0 || graph.links.length > 0) {
+          setKgData(assistantId, graph)
+          return
+        }
+      }
+
       setKgStatus(assistantId, 'loading')
       try {
         const response = await api.getKgForQuery(query)
@@ -311,7 +321,7 @@ export function useChat() {
           finalizeIfReady()
 
           if (chatDeferKg) {
-            void hydrateKgForMessage(query, assistantId)
+            void hydrateKgForMessage(query, assistantId, doneData ?? null)
           }
         },
         (err) => {

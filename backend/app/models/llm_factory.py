@@ -32,6 +32,11 @@ def _uses_anthropic_api(base_url: str) -> bool:
     return normalized.endswith("/anthropic") or "/anthropic/" in normalized
 
 
+def _uses_deepseek_api(base_url: str) -> bool:
+    normalized = (base_url or "").rstrip("/").lower()
+    return "deepseek.com" in normalized
+
+
 def _is_retryable_model_error(exc: Exception) -> bool:
     message = str(exc).lower()
     return any(marker in message for marker in _RETRYABLE_MODEL_ERRORS)
@@ -126,6 +131,7 @@ def _build_chat_model(
     model: str,
     streaming: bool = False,
 ) -> Any:
+    timeout_seconds = max(5, settings.llm.timeout_seconds)
     if _uses_anthropic_api(base_url):
         return ChatAnthropic(
             api_key=api_key,
@@ -135,16 +141,26 @@ def _build_chat_model(
             temperature=0.1,
             max_tokens=4096,
             max_retries=4,
+            timeout=timeout_seconds,
         )
 
-    return ChatOpenAI(
-        api_key=api_key,
-        base_url=base_url,
-        model=model,
-        streaming=streaming,
-        temperature=0.1,
-        max_retries=4,
-    )
+    extra_body = None
+    if settings.llm.disable_thinking and _uses_deepseek_api(base_url):
+        extra_body = {"thinking": {"type": "disabled"}}
+
+    kwargs: dict[str, Any] = {
+        "api_key": api_key,
+        "base_url": base_url,
+        "model": model,
+        "streaming": streaming,
+        "temperature": 0.1,
+        "max_retries": 4,
+        "timeout": timeout_seconds,
+    }
+    if extra_body is not None:
+        kwargs["extra_body"] = extra_body
+
+    return ChatOpenAI(**kwargs)
 
 
 def get_llm(streaming: bool = False) -> Any:

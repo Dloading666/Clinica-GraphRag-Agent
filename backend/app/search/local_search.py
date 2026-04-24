@@ -132,10 +132,11 @@ class LocalSearch:
             for item in settings.search.query_expansion_apply_to.split(",")
             if item.strip()
         }
+        expansion_targets = {"hybrid", "graph", "fusion", "deep_research"}
         enabled = (
             settings.search.query_expansion_enabled
             and settings.search.query_expansion_mode == "synonym"
-            and "hybrid" in apply_targets
+            and bool(apply_targets & expansion_targets)
         )
         return build_query_expansion_plan(
             query,

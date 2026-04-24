@@ -1,6 +1,7 @@
 """Base LangGraph agent with true streaming via astream_events."""
 
 import asyncio
+import re
 import threading
 import time
 from abc import ABC, abstractmethod
@@ -19,6 +20,23 @@ from app.search.query_expansion import (
     has_visible_evidence,
     summarize_retrieval_stats,
 )
+from app.search.web_search import WebSearch
+
+
+_CONTEXT_TOKEN_PATTERN = re.compile(r"[A-Za-z0-9]{2,}|[\u4e00-\u9fff]{1,4}")
+_FOLLOW_UP_HINTS = (
+    "那", "那么", "这个", "这种", "它", "上述", "上面", "刚才", "继续",
+    "然后", "另外", "还有", "副作用", "剂量", "用量", "联合", "合并",
+    "调整", "换药", "怎么选", "能不能", "是否", "怎么办",
+)
+
+
+def _context_tokens(text: str) -> set[str]:
+    return {
+        token.strip().lower()
+        for token in _CONTEXT_TOKEN_PATTERN.findall(text or "")
+        if token.strip()
+    }
 
 
 _RUN_ASYNC_LOOP: asyncio.AbstractEventLoop | None = None
@@ -118,6 +136,7 @@ class BaseAgent(ABC):
         self.require_knowledge_evidence = False
         self._latest_retrieval_stats: Dict[str, Any] = empty_retrieval_stats()
         self._latest_source_items: List[Dict[str, Any]] = []
+        self.web_search = WebSearch()
         self.tools = self._setup_tools()
         self._setup_graph()
 
@@ -206,6 +225,38 @@ class BaseAgent(ABC):
             "建议你换一种问法、缩小问题范围，或先补充对应的知识库资料后再试。"
         )
 
+    async def _attempt_web_search_fallback(
+        self,
+        query: str,
+        messages: List[BaseMessage],
+    ) -> Dict[str, Any] | None:
+        if not settings.search.web_search_enabled:
+            return None
+
+        try:
+            payload = await self.web_search.search_with_metadata(query)
+        except Exception as exc:
+            self._log_execution("web_search", query, f"failed: {exc}")
+            return None
+
+        stats = payload.get("stats") or empty_retrieval_stats()
+        sources = payload.get("sources") or []
+        context = str(payload.get("context", "")).strip()
+        self._set_retrieval_metadata(stats=stats, source_items=sources)
+
+        if not has_visible_evidence(stats) or not context:
+            self._log_execution("web_search", query, "no_visible_evidence")
+            return None
+
+        self._log_execution("agent", query, "forced_retrieval:web_search")
+        self._log_execution("web_search", query, context[:500])
+        messages.append(AIMessage(content=context))
+        return {
+            "messages": messages,
+            "direct_answer": "",
+            "forced_retrieval_tool": "web_search",
+        }
+
     def _normalize_retrieval_context(self, value: Any) -> str:
         text = content_to_text(value).strip()
         normalized = text.lower()
@@ -231,6 +282,65 @@ class BaseAgent(ABC):
         if messages:
             return content_to_text(messages[-1].content).strip()
         return ""
+
+    def _trim_context_message(self, message: BaseMessage) -> BaseMessage:
+        if not isinstance(message, (HumanMessage, AIMessage)):
+            return message
+
+        content = content_to_text(message.content).strip()
+        if not content:
+            return message
+
+        limit = max(200, int(settings.chat.context_message_char_limit))
+        if len(content) > limit:
+            content = f"{content[:limit].rstrip()}……"
+
+        if isinstance(message, HumanMessage):
+            return HumanMessage(content=content)
+        return AIMessage(content=content)
+
+    def _is_follow_up_query(self, query: str) -> bool:
+        normalized = query.strip().lower()
+        if len(normalized) <= 10:
+            return True
+        return any(hint in normalized for hint in _FOLLOW_UP_HINTS)
+
+    def _should_reset_context(
+        self,
+        query: str,
+        history: Sequence[BaseMessage],
+    ) -> bool:
+        if not settings.chat.context_topic_reset_enabled:
+            return False
+
+        clean_query = query.strip()
+        if not clean_query or self._is_follow_up_query(clean_query):
+            return False
+
+        recent_user_messages = [
+            content_to_text(message.content).strip()
+            for message in history
+            if isinstance(message, HumanMessage)
+        ]
+        if not recent_user_messages:
+            return False
+
+        query_tokens = _context_tokens(clean_query)
+        if len(query_tokens) < 2:
+            return False
+
+        max_overlap = 0.0
+        for previous_query in recent_user_messages:
+            previous_tokens = _context_tokens(previous_query)
+            if not previous_tokens:
+                continue
+            overlap = len(query_tokens & previous_tokens) / max(
+                1,
+                len(query_tokens | previous_tokens),
+            )
+            max_overlap = max(max_overlap, overlap)
+
+        return max_overlap < 0.08
 
     def _is_retryable_llm_error(self, exc: Exception) -> bool:
         message = str(exc).lower()
@@ -365,6 +475,26 @@ class BaseAgent(ABC):
         messages.append(AIMessage(content=normalized))
         return {"messages": messages, "direct_answer": ""}
 
+    async def _handle_missing_tool_calls(
+        self,
+        query: str,
+        messages: List[BaseMessage],
+        response: BaseMessage | None = None,
+    ) -> Dict[str, Any] | None:
+        """Force retrieval when a knowledge-backed agent skipped tool calls.
+
+        Some broad first-turn questions can cause the LLM to answer directly
+        instead of calling the retriever. For evidence-required RAG modes, that
+        creates the observed "first try fails, second try works" behavior
+        because the second turn benefits from the prior refusal message. We fix
+        that here by forcing retrieval on the first turn whenever an agent must
+        be evidence-backed.
+        """
+        del response
+        if not self.require_knowledge_evidence:
+            return None
+        return await self._run_single_tool_retrieval(query, messages)
+
     async def _stream_fast_start_preamble(
         self, query: str
     ) -> AsyncGenerator[str, None]:
@@ -477,16 +607,34 @@ class BaseAgent(ABC):
             self._log_execution(node_name, log_input, f"{error} ({last_exc})")
             yield error
 
-    def _load_thread_history(self, thread_id: str) -> List[BaseMessage]:
+    def _load_thread_history(
+        self,
+        thread_id: str,
+        *,
+        query: str | None = None,
+    ) -> List[BaseMessage]:
         config = {"configurable": {"thread_id": thread_id}}
         state = self.memory.get(config)
         if not state:
             return []
-        return list(state["channel_values"].get("messages", []))
+
+        history = [
+            message
+            for message in state["channel_values"].get("messages", [])
+            if isinstance(message, (HumanMessage, AIMessage))
+        ]
+        max_messages = max(2, int(settings.chat.context_max_turns) * 2)
+        recent_history = history[-max_messages:]
+
+        if query and self._should_reset_context(query, recent_history):
+            self._log_execution("context", query[:120], "topic_reset:ignored_previous_history")
+            return []
+
+        return [self._trim_context_message(message) for message in recent_history]
 
     async def _prepare_stream_state(self, query: str, thread_id: str) -> Dict[str, Any]:
         """Prepare retrieval state without crossing event loops."""
-        history = self._load_thread_history(thread_id)
+        history = self._load_thread_history(thread_id, query=query)
         messages: List[BaseMessage] = [*history, HumanMessage(content=query)]
         model = self.llm.bind_tools(self.tools)
         try:
@@ -508,6 +656,13 @@ class BaseAgent(ABC):
         tool_calls = getattr(response, "tool_calls", None) or \
             getattr(response, "additional_kwargs", {}).get("tool_calls", [])
         if not tool_calls:
+            forced_retrieval = await self._handle_missing_tool_calls(
+                query,
+                messages,
+                response,
+            )
+            if forced_retrieval is not None:
+                return forced_retrieval
             return {
                 "messages": messages,
                 "direct_answer": content_to_text(
@@ -607,43 +762,62 @@ class BaseAgent(ABC):
             if self.require_knowledge_evidence and not has_visible_evidence(
                 self._latest_retrieval_stats
             ):
-                no_evidence_answer = self._build_no_evidence_answer()
-                mark_first_token(no_evidence_answer)
-                answer_parts.append(no_evidence_answer)
-                config = {"configurable": {"thread_id": thread_id}}
-                try:
-                    self.graph.update_state(
-                        config,
-                        {"messages": [
-                            HumanMessage(content=query),
-                            AIMessage(content=no_evidence_answer)
-                        ]},
-                        as_node="generate",
+                web_fallback = await self._attempt_web_search_fallback(
+                    query,
+                    prepared.get("messages", []),
+                )
+                if web_fallback is not None:
+                    prepared = web_fallback
+                    retrieval_summary = summarize_retrieval_stats(
+                        self._latest_retrieval_stats
                     )
-                except Exception:
-                    pass
-                yield (
-                    "thinking",
-                    ThinkingEvent(
-                        node="generate",
-                        label="组织回答",
-                        content="知识库未命中可展示证据，已阻止伪装成证据支撑的回答。",
-                        done=True,
-                    ),
-                )
-                yield ("answer", no_evidence_answer)
-                yield (
-                    "done",
-                    {
-                        "retrieve_latency_ms": retrieve_latency_ms,
-                        "first_token_latency_ms": first_token_latency_ms,
-                        "answer_complete_latency_ms": int((time.perf_counter() - stream_start) * 1000),
-                        "used_fast_start": used_fast_start,
-                        "retrieval_stats": self._latest_retrieval_stats,
-                        "source_items": self._latest_source_items,
-                    },
-                )
-                return
+                    yield (
+                        "thinking",
+                        ThinkingEvent(
+                            node="retrieve",
+                            label="联网搜索",
+                            content=retrieval_summary,
+                            done=True,
+                        ),
+                    )
+                else:
+                    no_evidence_answer = self._build_no_evidence_answer()
+                    mark_first_token(no_evidence_answer)
+                    answer_parts.append(no_evidence_answer)
+                    config = {"configurable": {"thread_id": thread_id}}
+                    try:
+                        self.graph.update_state(
+                            config,
+                            {"messages": [
+                                HumanMessage(content=query),
+                                AIMessage(content=no_evidence_answer)
+                            ]},
+                            as_node="generate",
+                        )
+                    except Exception:
+                        pass
+                    yield (
+                        "thinking",
+                        ThinkingEvent(
+                            node="generate",
+                            label="组织回答",
+                            content="知识库与联网搜索均未命中可展示证据，已停止伪装成证据支撑的回答。",
+                            done=True,
+                        ),
+                    )
+                    yield ("answer", no_evidence_answer)
+                    yield (
+                        "done",
+                        {
+                            "retrieve_latency_ms": retrieve_latency_ms,
+                            "first_token_latency_ms": first_token_latency_ms,
+                            "answer_complete_latency_ms": int((time.perf_counter() - stream_start) * 1000),
+                            "used_fast_start": used_fast_start,
+                            "retrieval_stats": self._latest_retrieval_stats,
+                            "source_items": self._latest_source_items,
+                        },
+                    )
+                    return
 
             # 5. Stream the response
             yield (
@@ -663,7 +837,11 @@ class BaseAgent(ABC):
                     answer_parts.append(direct_text)
                     yield ("answer", direct_text)
             else:
-                state = {"messages": prepared["messages"]}
+                state = {
+                    key: value
+                    for key, value in prepared.items()
+                    if key != "direct_answer"
+                }
                 async for chunk in self._stream_response(state):
                     if not chunk:
                         continue

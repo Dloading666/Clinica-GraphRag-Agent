@@ -3,12 +3,15 @@
 from contextlib import asynccontextmanager
 
 import uvicorn
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
+from starlette.middleware.trustedhost import TrustedHostMiddleware
 
 from app.config.database import init_postgres, neo4j_manager
 from app.config.settings import settings
 from app.routers import api_router
+from app.security import enforce_public_api_request
 from app.services.agent_service import agent_manager
 from app.services.knowledge_base_task_service import knowledge_base_task_manager
 
@@ -52,13 +55,30 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
+if settings.security.allowed_hosts:
+    app.add_middleware(
+        TrustedHostMiddleware,
+        allowed_hosts=settings.security.allowed_hosts,
+    )
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_origins=settings.security.allowed_origins,
+    allow_credentials=False,
+    allow_methods=["GET", "POST", "OPTIONS"],
+    allow_headers=["Content-Type", "Authorization", "X-Admin-Api-Key", "X-Requested-With"],
 )
+
+
+@app.middleware("http")
+async def secure_public_api(request: Request, call_next):
+    if request.url.path.startswith("/api"):
+        try:
+            enforce_public_api_request(request)
+        except HTTPException as exc:
+            return JSONResponse(status_code=exc.status_code, content={"detail": exc.detail})
+    return await call_next(request)
+
 
 app.include_router(api_router)
 

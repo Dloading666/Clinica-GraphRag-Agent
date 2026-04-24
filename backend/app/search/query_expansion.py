@@ -22,6 +22,12 @@ _SYNONYM_GROUPS: Dict[str, List[str]] = {
     "有机磷中毒": ["有机磷酸酯类中毒", "农药中毒"],
     "去甲肾上腺素": ["noradrenaline", "norepinephrine"],
     "肾上腺素": ["epinephrine", "adrenaline"],
+    "感冒": ["普通感冒", "上呼吸道感染", "急性上呼吸道感染"],
+    "头痛": ["头疼", "头部疼痛", "偏头痛"],
+    "高血压": ["血压高", "原发性高血压", "hypertension"],
+    "心脏不舒服": ["胸闷", "胸痛", "心悸", "心前区不适"],
+    "发痒": ["瘙痒", "皮肤瘙痒", "全身瘙痒"],
+    "全身一热就全身发痒": ["受热后瘙痒", "热刺激性瘙痒", "胆碱能性荨麻疹"],
 }
 
 
@@ -100,6 +106,7 @@ def empty_retrieval_stats(*, used_query_expansion: bool = False) -> Dict[str, An
         "entity_hits": 0,
         "community_hits": 0,
         "relation_hits": 0,
+        "web_hits": 0,
         "evidence_total": 0,
         "used_query_expansion": used_query_expansion,
         "knowledge_backed": False,
@@ -115,6 +122,7 @@ def merge_retrieval_stats(*stats_items: Dict[str, Any]) -> Dict[str, Any]:
         merged["entity_hits"] += int(stats.get("entity_hits", 0) or 0)
         merged["community_hits"] += int(stats.get("community_hits", 0) or 0)
         merged["relation_hits"] += int(stats.get("relation_hits", 0) or 0)
+        merged["web_hits"] += int(stats.get("web_hits", 0) or 0)
         merged["evidence_total"] += int(stats.get("evidence_total", 0) or 0)
         merged["used_query_expansion"] = bool(
             merged["used_query_expansion"] or stats.get("used_query_expansion")
@@ -159,8 +167,10 @@ def summarize_retrieval_stats(stats: Dict[str, Any] | None) -> str:
         parts.append(f"{stats['community_hits']} 条社区摘要")
     if stats.get("relation_hits"):
         parts.append(f"{stats['relation_hits']} 条实体关系")
+    if stats.get("web_hits"):
+        parts.append(f"{stats['web_hits']} 条网页结果")
 
-    summary = "，".join(parts) if parts else "已命中知识库证据"
+    summary = "，".join(parts) if parts else "已命中可展示证据"
     if stats.get("used_query_expansion"):
         summary += "；已启用同义词拓展"
     return f"累计命中 {stats.get('evidence_total', 0)} 条可展示证据：{summary}。"
