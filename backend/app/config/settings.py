@@ -78,15 +78,15 @@ class Neo4jSettings(BaseSettings):
 
 class ChunkSettings(BaseSettings):
     """Configuration section."""
-    chunk_size: int = Field(default=800, alias="CHUNK_SIZE")
-    chunk_overlap: int = Field(default=200, alias="CHUNK_OVERLAP")
+    chunk_size: int = Field(default=500, alias="CHUNK_SIZE")
+    chunk_overlap: int = Field(default=100, alias="CHUNK_OVERLAP")
 
     model_config = {"env_file": ".env", "extra": "ignore"}
 
 
 class SearchSettings(BaseSettings):
     """Configuration section."""
-    top_k: int = Field(default=15, alias="SEARCH_TOP_K")
+    top_k: int = Field(default=12, alias="SEARCH_TOP_K")
     similarity_threshold: float = Field(default=0.82, alias="SIMILARITY_THRESHOLD")
     query_expansion_enabled: bool = Field(default=True, alias="QUERY_EXPANSION_ENABLED")
     query_expansion_mode: str = Field(default="synonym", alias="QUERY_EXPANSION_MODE")

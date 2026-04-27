@@ -92,12 +92,9 @@ class KnowledgeBaseTaskManager:
         if counts["documents"] == 0 or counts["chunks"] == 0:
             return await self.start_ingestion(
                 path=self._default_path,
-                build_graph=True,
+                build_graph=False,
                 reason="startup_seed",
             )
-
-        if counts["chunks"] > 0 and counts["entities"] == 0:
-            return await self.start_rebuild(reason="startup_rebuild")
 
         return await self.get_status()
 
