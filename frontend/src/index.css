@@ -161,6 +161,26 @@ body {
   min-width: 0;
 }
 
+.clinirag-github-link.ant-btn {
+  border-color: rgba(22, 119, 255, 0.22);
+  color: #1456d9;
+  background: linear-gradient(135deg, #f7fbff 0%, #edf6ff 100%);
+  box-shadow: 0 8px 20px rgba(22, 119, 255, 0.08);
+  font-weight: 700;
+}
+
+.clinirag-github-link.ant-btn:hover,
+.clinirag-github-link.ant-btn:focus {
+  border-color: rgba(22, 119, 255, 0.42) !important;
+  color: #0f63ff !important;
+  background: linear-gradient(135deg, #ffffff 0%, #eaf4ff 100%) !important;
+  box-shadow: 0 10px 24px rgba(22, 119, 255, 0.14);
+}
+
+.clinirag-github-link .anticon {
+  color: inherit;
+}
+
 .clinirag-mobile-content {
   min-height: 0;
   overflow: hidden;

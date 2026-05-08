@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import type { ChangeEvent } from 'react'
 import {
   AppstoreOutlined,
+  GithubOutlined,
   SettingOutlined,
   UserOutlined,
 } from '@ant-design/icons'
@@ -25,6 +26,7 @@ const { Header, Content, Sider } = Layout
 const MAX_AVATAR_FILE_SIZE = 5 * 1024 * 1024
 const AVATAR_OUTPUT_SIZE = 256
 const MOBILE_BREAKPOINT = 960
+const GITHUB_REPOSITORY_URL = 'https://github.com/Dloading666/Clinica-GraphRag-Agent'
 
 function useIsMobile() {
   const getMatches = () =>
@@ -169,6 +171,15 @@ export default function MainLayout() {
             >
               详情
             </Button>
+            <Button
+              className="clinirag-github-link"
+              size="small"
+              icon={<GithubOutlined />}
+              href={GITHUB_REPOSITORY_URL}
+              target="_blank"
+            >
+              GitHub
+            </Button>
             {renderAvatarPicker()}
           </Space>
         </Header>
@@ -253,6 +264,14 @@ export default function MainLayout() {
           </div>
         </Space>
         <Space size={16} align="center">
+          <Button
+            className="clinirag-github-link"
+            icon={<GithubOutlined />}
+            href={GITHUB_REPOSITORY_URL}
+            target="_blank"
+          >
+            GitHub
+          </Button>
           {renderAvatarPicker()}
         </Space>
       </Header>
